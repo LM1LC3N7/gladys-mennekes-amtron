@@ -128,7 +128,9 @@ inconnue ou rien. Elle n’est abandonnée que dans ces trois cas :
 
 Elle n’est jamais abandonnée avec le temps, ni parce qu’elle n’a pas pu
 partir (borne coupée, `/data` bloqué), ni par une pause ou une commande
-envoyée à une autre adresse. Tant qu’une pause est gardée, « Courant de
+envoyée à une autre adresse : une pause gardée pour une ancienne adresse (la
+configuration a changé) reste vérifiée toutes les 15 s, avec sa note dans le
+statut, tant qu’elle n’est pas vue appliquée. Tant qu’une pause est gardée, « Courant de
 charge » et « Reprendre » écrivent toujours (jamais « déjà fait »), et cette
 écriture abandonne la pause.
 
@@ -140,7 +142,8 @@ après son **délai de communication** (registre 132) sans lecture ni
 Current est au-dessus de la limite réglée (une pause comprise), la charge
 reprendrait. Tant que c’est le cas, Gladys lit donc la borne au moins toutes
 les demi-durées de ce délai (5 s au moins ; un délai sous 10 s ne peut donc
-pas être tenu), une lecture en échec réessayée dans les 5 s, et tout de suite
+pas être tenu), une lecture en échec réessayée dans les 5 s, une lecture qui trouve la
+ligne occupée réessayée dans la seconde, et tout de suite
 après un redémarrage (le rythme est gardé dans `/data`), et aussi
 pendant une pause quand 131 et 132 ne peuvent pas être lus ; et le
 statut prévient que la pause ne tient que tant que Gladys lit la borne. Pour

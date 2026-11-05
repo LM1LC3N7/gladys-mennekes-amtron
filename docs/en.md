@@ -121,7 +121,9 @@ only in these three cases:
 - a newer current or resume clicked in Gladys left for that same charger.
 
 It is never let go by time, because it could not leave (charger down,
-`/data` stuck), nor by a pause or a command sent to another address. While a
+`/data` stuck), nor by a pause or a command sent to another address: a pause
+held for an old address (the configuration changed) is still checked every
+15 s, with its note in the status, until it is seen applied. While a
 pause is held, "Charging current" and "Resume" always write (never "already
 done"), and that write lets the pause go.
 
@@ -132,7 +134,8 @@ its **communication timeout** (register 132) without a read or a write, it
 applies its **Safe Current** (register 131). If the Safe Current is above the
 limit set (a pause included), the charge would start again. So, while that is
 the case (or while 131 and 132 cannot be read during a pause), Gladys reads
-the charger at least every half timeout, a failed read tried again within 5 s,
+the charger at least every half timeout, a failed read tried again within 5 s, a read
+that finds the line taken tried again within a second,
 and at once after a restart (the pace is kept in `/data`), and the status
 warns that the pause holds only while Gladys reads the charger. The half
 timeout is taken as 5 s at the least: a communication timeout under 10 s

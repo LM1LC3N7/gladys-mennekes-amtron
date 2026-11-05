@@ -805,6 +805,17 @@ export class AmtronApp {
     }, wait);
   }
 
+  /**
+   * A poll that found the line taken (a pause, a command, a check): the next
+   * turn, or a second later while the keep-alive lives (the charger must hear
+   * from Gladys before its timeout, whatever holds the line).
+   */
+  scheduleBusy() {
+    // Never sooner than the interval after the last read (a read dropped by a
+    // command or a pause is followed by their own reads at 5 s).
+    this.schedule(this.keepAlive === undefined ? undefined : SECOND);
+  }
+
   /** One read at a time: a tick during a read joins it. */
   tick() {
     const u = this.unit;
@@ -834,8 +845,9 @@ export class AmtronApp {
       return;
     }
     if (this.active || this.reserved > 0) {
-      // A command or a stop holds the line: the poll waits for the next turn.
-      this.schedule();
+      // A command, a pause or a check holds the line: the poll waits for the next turn
+      // (a second only while the keep-alive lives: the charger must hear from Gladys).
+      this.scheduleBusy();
       return;
     }
     await this.noteAttempt();
@@ -843,7 +855,7 @@ export class AmtronApp {
       return;
     }
     if (this.active || this.reserved > 0) {
-      this.schedule();
+      this.scheduleBusy();
       return;
     }
     const startedAt = this.mono();
@@ -870,8 +882,10 @@ export class AmtronApp {
       return;
     }
     let delay;
+    let busy = false;
     if (failure?.kind === ERROR_KINDS.ABORTED) {
       this.logger.debug('MENNEKES AMTRON: read dropped, a command took the line');
+      busy = true;
     } else if (failure) {
       delay = this.failed(failure);
     } else if (startedAt <= this.lastSentAt) {
@@ -886,14 +900,21 @@ export class AmtronApp {
       if (generation !== this.generation) {
         return;
       }
-      await this.applyRead(result, startedAt, serial);
+      if (startedAt <= this.lastSentAt) {
+        // A pause or a command left while the serial number was read: this read
+        // may show the state before it (checked again right before it is applied).
+        this.logger.debug('MENNEKES AMTRON: read begun before a command, not applied');
+      } else {
+        await this.applyRead(result, startedAt, serial);
+      }
     }
     if (generation !== this.generation) {
       return;
     }
     await this.publishAll();
     if (generation === this.generation) {
-      this.schedule(delay);
+      if (busy) this.scheduleBusy();
+      else this.schedule(delay);
     }
   }
 
@@ -1938,6 +1959,10 @@ export class AmtronApp {
   /** Values a command or a stop read: in memory and to Gladys in the background. */
   noteValues(values, target) {
     const u = this.unit;
+    if (sameTarget(target, this.target()) && values.hemsLimit !== undefined) {
+      // A limit read back (a pause, a current): the keep-alive follows it at once.
+      this.updateKeepAlive(values);
+    }
     // Only the charger of the configuration: a pause held for an old address shows nothing.
     if (u.online !== true || !u.values || !sameTarget(target, this.target())) {
       return;

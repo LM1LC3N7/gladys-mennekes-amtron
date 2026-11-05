@@ -1311,3 +1311,68 @@ test('r1 I1: during a pause kept alive, a charger down is tried every 5 s, not a
     stop();
   }
 });
+
+test('r2 I1: a read begun before a pause, held up by a slow PublicInfo, is never applied after it', async () => {
+  const { app, gladys, fire, stop, dev, advance } = await setup();
+  try {
+    dev.set(132, 20);
+    await advance(31 * SECOND, 100);
+    assert.equal(app.keepAlive, undefined, '16 A, Safe Current 16 A: no keep-alive');
+    dev.infoDelay = 2000;
+    app.clearTimer();
+    app.lastAttemptAt = -Infinity;
+    const reading = app.tick();
+    // The Modbus part is done; the read waits for the serial number.
+    await advance(400, 10);
+    const ack = fire(R.PAUSE, 1);
+    await advance(3 * SECOND, 50);
+    ok(await ack);
+    await reading;
+    const last = (role) =>
+      gladys.fake.states.findLast((s) => s.device_feature_external_id === feature(role))?.state;
+    assert.equal(last(R.PAUSED), 1, 'still paused after the old read');
+    assert.equal(last(R.CURRENT_LIMIT), 0);
+    assert.equal(
+      app.keepAlive,
+      10_000,
+      'the keep-alive started with the pause, never ended by the old read',
+    );
+  } finally {
+    stop();
+  }
+});
+
+test('r2 m1: while the keep-alive lives, a poll that finds the line taken is tried again within a second', async () => {
+  const { app, press, stop, dev, advance, clock } = await setup({
+    config: { host: HOST, poll_interval: 300 },
+  });
+  try {
+    dev.set(132, 20);
+    ok(await press(R.PAUSE, 1));
+    await advance(30 * SECOND, 100);
+    assert.equal(app.keepAlive, 10_000);
+    // Hold the line for 3 s right before the next poll is due.
+    for (let i = 0; i < 200 && app.mono() < app.due - 300; i += 1) await advance(100, 100);
+    const lastRead = clock.monotonic();
+    const held = app.useLine(
+      'check',
+      app.target(),
+      1000,
+      () => new Promise((resolve) => clock.timers.setTimeout(resolve, 3000)),
+    );
+    const before = dev.reads().filter((r) => r.address === 141).length;
+    let readAt;
+    for (let i = 0; i < 200 && readAt === undefined; i += 1) {
+      await advance(100, 100);
+      if (dev.reads().filter((r) => r.address === 141).length > before) readAt = clock.monotonic();
+    }
+    await held;
+    assert.ok(readAt !== undefined, 'read again');
+    assert.ok(
+      readAt - lastRead <= 5_000,
+      `${Math.round(readAt - lastRead)} ms after the line was taken`,
+    );
+  } finally {
+    stop();
+  }
+});
