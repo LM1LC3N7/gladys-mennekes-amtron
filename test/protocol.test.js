@@ -1,7 +1,7 @@
 // -----------------------------------------------------------------------------
 // The Modbus PDUs (pure): the blocks are runs of documented registers, the
 // answers are taken only at their exact size, the write request is register
-// 2000 with 0 or 6 A to 32 A, nothing else.
+// 2000 with 0 or 6 A to 16 A, nothing else.
 // -----------------------------------------------------------------------------
 
 import { test } from 'node:test';
@@ -102,12 +102,13 @@ test('decoding: 32-bit high word first, signed, ASCII high byte first', () => {
   assert.deepEqual(decodeBlock(meter, [1, 2]), {}, 'a wrong size decodes nothing');
 });
 
-test('the write: register 2000 only, 0 or 6 A to 32 A, never anything else', () => {
+test('the write: register 2000 only, 0 or 6 A to 16 A, never anything else', () => {
   assert.deepEqual([...writeRequest(2000, 0)], [6, 0x07, 0xd0, 0, 0]);
   assert.deepEqual([...writeRequest(2000, 16)], [6, 0x07, 0xd0, 0, 16]);
   for (const [address, value] of [
     [2000, 5],
-    [2000, 33],
+    [2000, 17],
+    [2000, 32],
     [2000, 6.5],
     [2000, -1],
     [2000, '10'],
@@ -117,7 +118,8 @@ test('the write: register 2000 only, 0 or 6 A to 32 A, never anything else', () 
   ]) {
     assert.throws(() => writeRequest(address, value), RangeError, `${address}=${value}`);
   }
-  assert.equal(writableCurrent(32), true);
+  assert.equal(writableCurrent(16), true);
+  assert.equal(writableCurrent(17), false);
   assert.equal(writableCurrent(1), false);
   const request = writeRequest(2000, 10);
   assert.equal(isWriteEcho(request, Buffer.from(request)), true);

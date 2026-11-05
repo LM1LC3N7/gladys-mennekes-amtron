@@ -43,16 +43,6 @@ export const modelOf = (text) =>
     ? text.trim() || undefined
     : undefined;
 
-/**
- * The highest current of the model: 32 A when its name says 22 kW (the 4You
- * 560 22 C2), else 16 A, as the manufacturer's document says (6 A to 16 A).
- */
-export function modelMax(model) {
-  return typeof model === 'string' && /(?:^|\s)22(?:\s|$|kw)/i.test(model)
-    ? CURRENT.max
-    : CURRENT.defaultModelMax;
-}
-
 /** A protocol version "X.XX" (register 120) as a number, else undefined. */
 export function protocolOf(text) {
   const match = typeof text === 'string' ? /^(\d{1,2})\.(\d{1,2})$/.exec(text.trim()) : null;

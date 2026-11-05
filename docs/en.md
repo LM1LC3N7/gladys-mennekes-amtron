@@ -27,26 +27,28 @@ it, resume it and set the charging current.
 
 ## Configuration
 
-| Field                        | Meaning                                                                                      |
-| ---------------------------- | -------------------------------------------------------------------------------------------- |
-| IP address of the charger    | Modbus port 502 unless you add one (`192.168.1.80:502`).                                     |
-| Port of the web interface    | 80 unless changed: Gladys reads the serial number there (`/api/v1/PublicInfo`, no login).    |
-| Allow resume and current     | Off by default: see "Resume and current" below.                                              |
-| Highest charging current (A) | 6 to 32 A (16 by default): the most Gladys may set, also capped by the model of the charger. |
-| Refresh interval             | Seconds between two reads (30 by default, 10 at least); see "Safe Current" below.            |
-| Language                     | Names of the device and features added from now on, status and errors.                       |
+| Field                        | Meaning                                                                                   |
+| ---------------------------- | ----------------------------------------------------------------------------------------- |
+| IP address of the charger    | Modbus port 502 unless you add one (`192.168.1.80:502`).                                  |
+| Port of the web interface    | 80 unless changed: Gladys reads the serial number there (`/api/v1/PublicInfo`, no login). |
+| Allow resume and current     | Off by default: see "Resume and current" below.                                           |
+| Highest charging current (A) | 6 to 16 A (16 by default): the most Gladys may set (the document's range, every model).   |
+| Refresh interval             | Seconds between two reads (30 by default, 10 at least); see "Safe Current" below.         |
+| Language                     | Names of the device and features added from now on, status and errors.                    |
 
 Save, then add the charger from the **Discovery** tab.
 
-The Modbus map has no serial number: Gladys reads it once on the web
-interface of the charger (no login), then every hour and after every outage,
-and keeps it with the model name the charger gives over Modbus. The device is
-keyed on that **serial number**. Every read checks over Modbus that the
-device says it is an AMTRON (register 141 = "AM") and gives the same model:
-otherwise nothing is published until the serial number is read again. Another
-serial number at the address is another device (the old one shows
-unreachable). Until the serial number has been read once, nothing is
-published (the status says why).
+The Modbus map has no serial number: Gladys reads it on the web interface of
+the charger (no login) with **every read** and before every command, at the
+very address the Modbus connection reached, and keeps it with the model name
+the charger gives over Modbus. The device is keyed on that **serial number**:
+another serial number at the address is another device (the old one shows
+unreachable), and its values never go to the first one. When the web page
+cannot be read, that is not another charger: the read is published if the
+device says over Modbus it is an AMTRON (register 141 = "AM") with the same
+model, else nothing is published until the serial number is read again.
+Until the serial number has been read once, nothing is published (the status
+says why).
 
 The **Test the connection** button reads the charger once, never sooner than
 the refresh interval after the last read (it then shows the last result).
@@ -106,14 +108,22 @@ The pause answers an error only in these cases:
 - it was sent but the read back does not show it yet: "sent, without
   confirmation".
 
-A pause not seen applied is **kept** in `/data` (also across a restart: it is
-written again at the start, before anything else) and checked every 15 s:
-written again while the charger shows the limit it replaced, an unknown limit
-or nothing. It is let go only when the charger shows the pause, when another
-limit set elsewhere is read twice in a row after the pause was written (a
-newer choice is respected; a pause not written yet is never let go this way),
-or when a newer current clicked in Gladys was sent. It is never let go by
-time, nor because it could not leave (charger down, `/data` stuck).
+A pause not seen applied is **kept** in `/data`, one per charger (also across
+a restart: it is written again at the start, before anything else, even when
+`/data` is slow to read) and checked every 15 s: written again while the
+charger shows the limit it replaced, an unknown limit or nothing. It is let go
+only in these three cases:
+
+- the charger it was sent to shows the pause (a limit below 6 A);
+- another limit set elsewhere is read twice in a row on that charger after
+  the pause was written (a newer choice is respected; a pause not written yet
+  is never let go this way);
+- a newer current or resume clicked in Gladys left for that same charger.
+
+It is never let go by time, because it could not leave (charger down,
+`/data` stuck), nor by a pause or a command sent to another address. While a
+pause is held, "Charging current" and "Resume" always write (never "already
+done"), and that write lets the pause go.
 
 ### Safe Current
 
@@ -121,9 +131,12 @@ In "HEMS read and write" mode the charger watches the communication: after
 its **communication timeout** (register 132) without a read or a write, it
 applies its **Safe Current** (register 131). If the Safe Current is above the
 limit set (a pause included), the charge would start again. So, while that is
-the case, Gladys reads the charger at least every half timeout (5 s at the
-least), and the status warns that the pause holds only while
-Gladys reads the charger. To keep a pause even when Gladys is stopped, set
+the case (or while 131 and 132 cannot be read during a pause), Gladys reads
+the charger at least every half timeout, a failed read tried again within 5 s,
+and at once after a restart (the pace is kept in `/data`), and the status
+warns that the pause holds only while Gladys reads the charger. The half
+timeout is taken as 5 s at the least: a communication timeout under 10 s
+cannot be kept. To keep a pause even when Gladys is stopped, set
 the Safe Current to 0 A in the installer menu. Gladys never writes these two
 registers.
 
@@ -133,10 +146,10 @@ Off by default. With **Allow resume and current** on, Gladys may:
 
 - **Resume charging**: writes back the charging current read before the
   pause (refused when none was read; choose one with the selection);
-- set the **charging current**: 6 A up to the lowest of the configured
-  ceiling and the maximum of the model (16 A for an 11 kW model, 32 A when
-  its name says 22 kW), never below the minimum current the charger gives
-  (register 712).
+- set the **charging current**: 6 A up to the configured ceiling, 16 A at
+  most for every model, never below the minimum current the charger gives
+  (register 712). The MENNEKES document gives 6 A to 16 A for register 2000;
+  above 16 A on a 22 kW model is not in it, so Gladys never writes it.
 
 Before each command Gladys reads the serial number on the web interface
 (another charger, or one that cannot be read, refuses the command), then, in
@@ -151,5 +164,6 @@ their order of arrival; one waiting its turn starts within 15 s or not at all.
 
 `/data/mennekes-amtron-state.json` (readable by the integration only): the
 time of the last read, the charger of the last read, its serial number and
-model, a pause not seen applied, the guard of the energy meter and the current
-"Resume" sets again. No password, no personal data.
+model, the pauses not seen applied, the pace of reads while a limit below the
+Safe Current is set, the guard of the energy meter and the current "Resume"
+sets again. No password, no personal data.

@@ -99,8 +99,8 @@ export const T = {
   ),
   noSerial: (host, port, reason) =>
     both(
-      `Connected over Modbus, but the serial number could not be read at http://${host}:${port}/api/v1/PublicInfo (${reason}): the device is published once it is read (tried again every minute).`,
-      `Connecté en Modbus, mais le numéro de série n’a pas pu être lu sur http://${host}:${port}/api/v1/PublicInfo (${reason}) : l’appareil est publié dès qu’il est lu (nouvel essai chaque minute).`,
+      `Connected over Modbus, but the serial number could not be read at http://${host}:${port}/api/v1/PublicInfo (${reason}): the device is published once it is read (tried again at every read).`,
+      `Connecté en Modbus, mais le numéro de série n’a pas pu être lu sur http://${host}:${port}/api/v1/PublicInfo (${reason}) : l’appareil est publié dès qu’il est lu (nouvel essai à chaque lecture).`,
     ),
   connected: (serial, v) => {
     const parts = [];

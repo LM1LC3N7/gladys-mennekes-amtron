@@ -83,8 +83,8 @@
         "fr": "Autoriser la reprise et le courant"
       },
       "description": {
-        "en": "Off by default. On: Gladys may resume the charge and set the charging current (6 A up to the ceiling below and the maximum of the charger). Off: these commands are refused. Pausing the charge never depends on this option.",
-        "fr": "Désactivé par défaut. Activé : Gladys peut reprendre la charge et régler le courant de charge (de 6 A jusqu’au plafond ci-dessous et au maximum de la borne). Désactivé : ces commandes sont refusées. Mettre la charge en pause ne dépend jamais de cette option."
+        "en": "Off by default. On: Gladys may resume the charge and set the charging current (6 A up to the ceiling below). Off: these commands are refused. Pausing the charge never depends on this option.",
+        "fr": "Désactivé par défaut. Activé : Gladys peut reprendre la charge et régler le courant de charge (de 6 A jusqu’au plafond ci-dessous). Désactivé : ces commandes sont refusées. Mettre la charge en pause ne dépend jamais de cette option."
       },
       "required": false,
       "default": false
@@ -97,13 +97,13 @@
         "fr": "Courant de charge maximal (A)"
       },
       "description": {
-        "en": "The highest current Gladys may set, 6 to 32 A (16 by default); never above what the model allows (16 A for an 11 kW model, 32 A for a 22 kW one); the charger also applies the limit of its installation.",
-        "fr": "Le courant le plus élevé que Gladys peut régler, de 6 à 32 A (16 par défaut) ; jamais au-dessus de ce que le modèle permet (16 A pour un modèle 11 kW, 32 A pour un 22 kW) ; la borne applique aussi la limite de son installation."
+        "en": "The highest current Gladys may set, 6 to 16 A (16 by default): the range the MENNEKES document gives for every model, a 22 kW one included. The charger also applies the limit of its installation.",
+        "fr": "Le courant le plus élevé que Gladys peut régler, de 6 à 16 A (16 par défaut) : la plage que donne le document MENNEKES pour tous les modèles, 22 kW compris. La borne applique aussi la limite de son installation."
       },
       "required": false,
       "default": 16,
       "min": 6,
-      "max": 32
+      "max": 16
     },
     {
       "key": "poll_interval",
@@ -113,8 +113,8 @@
         "fr": "Intervalle de rafraîchissement (s)"
       },
       "description": {
-        "en": "How often the charger is read, in seconds. While a limit below the Safe Current is set, Gladys reads it at least every half communication timeout of the charger.",
-        "fr": "Fréquence de lecture de la borne, en secondes. Tant qu’une limite sous le Safe Current est réglée, Gladys la lit au moins toutes les demi-durées du délai de communication de la borne."
+        "en": "How often the charger is read, in seconds. While a limit below the Safe Current is set, Gladys reads it at least every half communication timeout of the charger (5 s at the least), also after a failed read and a restart.",
+        "fr": "Fréquence de lecture de la borne, en secondes. Tant qu’une limite sous le Safe Current est réglée, Gladys la lit au moins toutes les demi-durées du délai de communication de la borne (5 s au moins), y compris après une lecture en échec et un redémarrage."
       },
       "required": false,
       "default": 30,

@@ -36,7 +36,7 @@ const gladys = {
   }),
 };
 
-const devices = [16, 32].flatMap((ceiling) =>
+const devices = [16, 10].flatMap((ceiling) =>
   ['en', 'fr'].map((language) =>
     buildDevice(gladys, { serial: '1234567890', model: 'AMTRON 4You 560 11', language, ceiling }),
   ),

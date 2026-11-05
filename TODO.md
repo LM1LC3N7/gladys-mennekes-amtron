@@ -31,34 +31,40 @@ to date at the end of every milestone.
   1.5.21, 12.12.2025). Every block is a run of documented registers
   (`test/protocol.test.js`): the reference's 122/3 spans 123, not documented,
   so 122 is read alone. The only write is 2000 (HEMS current limit) with
-  function 6: 0 or 6 A to 32 A, checked at the protocol layer.
+  function 6: 0 or 6 A to 16 A, checked at the protocol layer.
 - **Pause = 2000 = 0 A** (the document: "To pause the charging session, set
   the register to 0 Ampere"); confirmed when the read back is below 6 A
   (the charger applies 0 A below 6 A). The deprecated copy 1000 is never
   written: a firmware without 2000 refuses the pause (exception), the status
   and the docs say so, and the pause stays kept and written again.
 - **Identity**: the Modbus map has no serial number. It is read on
-  `GET /api/v1/PublicInfo` (no login, as mennekes-amtron-ha does), once per
-  address, every hour, after every outage and when the Modbus model changes;
-  kept in /data with the model of register 142. Reads are published to that
-  serial when register 141 = "AM" and the model matches (a weaker check
-  between two HTTP reads, accepted so that an HTTP outage never stops the
-  readings); every command reads the serial number over HTTP first (an
-  unreadable or another serial refuses it). Without a serial read once,
-  nothing is published (no fallback id).
-- **Maximum of the model**: 32 A when the model name says 22 kW (`22` as a
-  word, "AMTRON 4You 560 22 C2"), else 16 A (the document says 6 A to 16 A);
-  the configured ceiling (16 A by default, 32 A at most) caps it further, the
-  minimum current read (712) raises the floor. Register 134 (operator current
+  `GET /api/v1/PublicInfo` (no login, as mennekes-amtron-ha does) with every
+  read (in parallel, bounded, the line never held) and before every command,
+  at the address the Modbus socket reached (a host name resolved once, r1
+  m2); kept in /data with the model of register 142. Another serial is
+  another device. When the page cannot be read (unreadable is not another
+  charger), a read is published to the serial kept only if register 141 =
+  "AM" and the model matches; a command is refused. Without a serial read
+  once, nothing is published (no fallback id).
+- **16 A at most** (review r1, m1): the document says for 2000 "Allowed
+  values are therefore 0A and 6A to 16A", for the whole family.
+  mennekes-amtron-ha 2.3.2 allows 32 A on 22 kW models, untested above 16 A
+  by its author: not followed. To check on a real 22 kW charger before ever
+  allowing more. The configured ceiling (16 A by default) caps it further,
+  the minimum current read (712) raises the floor (above the ceiling: every
+  current refused). Register 134 (operator current
   limit) is not used as a bound: it includes the HEMS limit itself.
 - **Resume** writes the last current >= 6 A read for the serial (kept in
   /data), bounded again; refused when none is known (never a fixed value).
   No state is saved before a resume or a current (no guard to set), so a
   failed /data save never blocks them, nor the pause.
 - **Keep-alive**: in HEMS read and write mode, while the limit read is below
-  the Safe Current and the communication timeout is known, the interval is at
-  most half the timeout (5 s at least): otherwise the charger would apply the
-  Safe Current and charge again. Safe Current and timeout are never written;
+  the Safe Current, the interval is at most half the timeout (5 s at least,
+  so a timeout under 10 s cannot be kept): otherwise the charger would apply
+  the Safe Current and charge again. Since r1: a failed read is tried again
+  within it, unread 131/132/2010 keep the last values (a pause with 131 never
+  read: 5 s), and it is kept in /data so the first read after a restart comes
+  within it. Safe Current and timeout are never written;
   the status and the docs say how to keep a pause without Gladys (Safe Current
   0 A).
 - **Commands** refused unless the HEMS mode (2010) reads 2.
@@ -67,6 +73,12 @@ to date at the end of every milestone.
 - **Energy meter** = register 218 (meter total, Wh), `energy-sensor/index`,
   guard of gladys-p1-monitor (25 kW of margin), session clock (wall at the
   start + monotonic time since).
+
+- **Review r1** (2026-11-05): one pause held per charger (a pause or a
+  command to another address never lets it go, its reads never shown on the
+  device of the configuration); with a pause held, the current and resume
+  always write; a /data slow to read still gives its pauses; /data saves
+  coalesced (one running, one waiting).
 
 ## To check on a real charger
 

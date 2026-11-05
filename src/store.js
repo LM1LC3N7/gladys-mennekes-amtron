@@ -8,10 +8,13 @@
 //     where a pause goes while the configuration is not read yet;
 //   - `identity`: the serial number read at that address (HTTP PublicInfo)
 //     and the model name the charger gives over Modbus with it;
-//   - `stop`: the pause not seen applied yet: its target, the limit read
-//     right after it was written (`from`), whether it was written, since
-//     when. A restart writes it again at once, before the configuration is
-//     even read. It never ends by time;
+//   - `stops`: the pauses not seen applied yet, one per charger (at most 8):
+//     its target, the limit read right after it was written (`from`),
+//     whether it was written, since when. A restart writes them again at
+//     once, before the configuration is even read. They never end by time;
+//   - `keepAlive`: the longest wait between two reads while a limit below
+//     the Safe Current is set (the first read after a restart comes within
+//     it);
 //   - `counters`: the guard of the energy index (src/guard.js);
 //   - `resume`: the last charging current (>= 6 A) read for the serial, the
 //     one "Resume charging" sets again.
@@ -50,6 +53,7 @@ async function readPlain(path) {
 export function fileStore(path = STATE_FILE) {
   // One write at a time: two saves never share the temporary file.
   let chain = Promise.resolve();
+  let waiting;
   return {
     /** `{ data }`, `{ data: null }` (no file) or `{ unreadable: true }`. */
     async load() {
@@ -66,9 +70,19 @@ export function fileStore(path = STATE_FILE) {
         return { unreadable: true };
       }
     },
+    /**
+     * At most one write running and one waiting: a save made while another
+     * waits replaces its content (a stuck disk never piles writes up).
+     */
     save(data) {
       const text = JSON.stringify(data);
-      const write = chain.then(async () => {
+      if (waiting) {
+        waiting.text = text;
+        return waiting.promise;
+      }
+      const entry = { text };
+      entry.promise = chain.then(async () => {
+        if (waiting === entry) waiting = undefined;
         const temporary = `${path}.tmp`;
         // Never an existing file (it could be a FIFO): removed, then created exclusively.
         await rm(temporary, { force: true });
@@ -78,14 +92,15 @@ export function fileStore(path = STATE_FILE) {
           0o600,
         );
         try {
-          await handle.writeFile(text);
+          await handle.writeFile(entry.text);
         } finally {
           await handle.close();
         }
         await rename(temporary, path);
       });
-      chain = write.catch(() => {});
-      return write;
+      waiting = entry;
+      chain = entry.promise.catch(() => {});
+      return entry.promise;
     },
   };
 }
@@ -193,6 +208,24 @@ function normalizeResume(raw) {
   return serial && current ? { serial, current } : null;
 }
 
+const MAX_STOPS = 8;
+
+/** The pauses kept: valid ones only, one per charger (an older file's single `stop` too). */
+function normalizeStops(data, now) {
+  const list = Array.isArray(data.stops) ? data.stops.slice(0, MAX_STOPS) : [data.stop];
+  const stops = [];
+  for (const entry of list) {
+    const stop = normalizeStop(entry, now);
+    if (
+      stop &&
+      !stops.some((s) => s.host === stop.host && s.port === stop.port && s.unitId === stop.unitId)
+    ) {
+      stops.push(stop);
+    }
+  }
+  return stops;
+}
+
 /** The persisted state, repaired and bounded (see the header). */
 export function normalizeMemory(raw, now) {
   const data = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
@@ -201,7 +234,9 @@ export function normalizeMemory(raw, now) {
     // A time in the future counts as now: never a longer wait than the interval.
     lastAttemptAt: Number.isFinite(data.lastAttemptAt) ? Math.min(data.lastAttemptAt, now) : null,
     identity: normalizeIdentity(data.identity),
-    stop: normalizeStop(data.stop, now) ?? null,
+    stops: normalizeStops(data, now),
+    stop: normalizeStops(data, now)[0] ?? null,
+    keepAlive: intIn(data.keepAlive, 5_000, 3_600_000) ?? null,
     counters: normalizeCounters(data.counters),
     resume: normalizeResume(data.resume),
   };

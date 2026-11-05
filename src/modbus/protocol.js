@@ -4,7 +4,7 @@
 // decoder returns undefined when the answer has not the exact size asked: an
 // unknown value is never a value. The write request is checked here once
 // more, whatever the caller asked: only register 2000, only 0 (the pause) or a
-// whole current from 6 A to 32 A (the manufacturer's range; the caller caps it
+// whole current from 6 A to 16 A (the manufacturer's range; the caller caps it
 // further at the ceiling of the charger and of the configuration).
 // -----------------------------------------------------------------------------
 
@@ -90,7 +90,7 @@ export function decodeBlock(block, words) {
   return values;
 }
 
-/** Whether `value` is a current Gladys may ever write: 0 (pause) or 6 A to 32 A, whole. */
+/** Whether `value` is a current Gladys may ever write: 0 (pause) or 6 A to 16 A, whole. */
 export const writableCurrent = (value) =>
   value === 0 || (Number.isInteger(value) && value >= CURRENT.min && value <= CURRENT.max);
 

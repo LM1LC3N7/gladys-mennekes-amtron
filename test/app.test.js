@@ -12,6 +12,15 @@ import { HOST, MODEL, NOW, SERIAL, fakeAmtron } from './fixtures/fakeAmtron.js';
 import { ALLOW, CFG, DEVICE, MINUTE, SECOND, feature, ok, refused, setup } from './helpers.js';
 import { testClock } from './kit/clock.mjs';
 
+/** Advances the clock by `step` until `cond()`, at most `rounds` times: throws then (never hangs). */
+async function until(cond, advance, step, rounds) {
+  for (let i = 0; i < rounds; i += 1) {
+    if (cond()) return;
+    await advance(step, step);
+  }
+  if (!cond()) throw new Error(`condition not met after ${rounds} steps of ${step} ms`);
+}
+
 const limitWrites = (dev) => dev.writes().filter((w) => w.address === 2000);
 const pauses = (dev) => limitWrites(dev).filter((w) => w.value === 0);
 
@@ -65,10 +74,10 @@ test('nothing published before the serial number is read; another serial is anot
     assert.equal(gladys.fake.discoveredDevices.length, 0);
     assert.equal(gladys.fake.connectionStatus.connected, false);
     assert.match(gladys.fake.connectionStatus.message.fr, /numéro de série n’a pas pu être lu/);
-    // Failing: tried again once a minute, not at every read.
+    // Failing: tried again with every read (one each), never more.
     const calls = dev.infoCalls;
     await advance(5 * MINUTE, 500);
-    assert.ok(dev.infoCalls - calls <= 6, `${dev.infoCalls - calls} reads of PublicInfo in 5 min`);
+    assert.ok(dev.infoCalls - calls <= 11, `${dev.infoCalls - calls} reads of PublicInfo in 5 min`);
     dev.infoFails = false;
     await advance(MINUTE + 5 * SECOND, 100);
     assert.equal(gladys.fake.discoveredDevices.at(-1).external_id, DEVICE);
@@ -156,7 +165,7 @@ test('a pause not applied is written again every 15 s, kept in /data, never ende
     dev.ignoreWrites = true;
     refused(await press(R.PAUSE, 1), /sans confirmation/);
     assert.ok(app.stopGuard);
-    assert.equal(store.data.stop.from, 16);
+    assert.equal(store.data.stops[0].from, 16);
     const before = pauses(dev).length;
     await advance(10 * MINUTE, 100);
     assert.ok(pauses(dev).length - before >= 30, `${pauses(dev).length - before} rewrites`);
@@ -164,7 +173,7 @@ test('a pause not applied is written again every 15 s, kept in /data, never ende
     dev.ignoreWrites = false;
     await advance(20 * SECOND, 100);
     assert.equal(app.stopGuard, undefined);
-    assert.equal(store.data.stop, null);
+    assert.deepEqual(store.data.stops, []);
   } finally {
     stop();
   }
@@ -240,8 +249,8 @@ test('a pause never sent (charger down) is kept, retried every 15 s, never aband
     const ack = fire(R.PAUSE, 1);
     await advance(5 * SECOND, 50);
     refused(await ack, /pas encore pu partir/);
-    assert.ok(store.data.stop);
-    assert.equal(store.data.stop.written, false);
+    assert.equal(store.data.stops.length, 1);
+    assert.equal(store.data.stops[0].written, false);
     await advance(30 * MINUTE, 1000);
     assert.ok(app.stopGuard, 'still held while the charger is down, whatever the time');
     dev.down = false;
@@ -400,7 +409,7 @@ test('resume without a current read before: refused, nothing sent', async () => 
 });
 
 test('the charging current: bounded on arrival, by the model and the minimum read', async () => {
-  const { app, press, fire, stop, dev, state, advance } = await setup({ config: ALLOW });
+  const { press, fire, stop, dev, state, advance } = await setup({ config: ALLOW });
   try {
     const opened = [dev.connections, dev.infoCalls];
     refused(await fire(R.SET_CURRENT, '33'), /entre 6 A et 16 A/);
@@ -416,20 +425,18 @@ test('the charging current: bounded on arrival, by the model and the minimum rea
     assert.equal(dev.get(2000), 10);
     await advance(20 * SECOND, 100);
     assert.equal(state(R.SET_CURRENT).text, '10');
-    // A configured ceiling of 32 A on an 11 kW model: 16 A at most.
-    await app.configUpdated({ ...ALLOW, max_current: 32 });
-    refused(await press(R.SET_CURRENT, '20'), /entre 6 A et 16 A/);
     // The minimum read on the charger raises the floor.
     dev.set(712, 8);
     refused(await press(R.SET_CURRENT, '7'), /entre 8 A et 16 A/);
     assert.equal(dev.get(2000), 10);
-    // A 22 kW model: up to 32 A.
+    // A 22 kW model: still 16 A at most (the document says 6 A to 16 A).
     dev.maxCurrent = 32;
     dev.setModel('AMTRON 4You 560 22');
     await advance(2 * MINUTE, 500);
-    ok(await press(R.SET_CURRENT, '20'));
-    assert.equal(dev.get(2000), 20);
-    assert.ok(limitWrites(dev).every((w) => w.value === 0 || (w.value >= 6 && w.value <= 32)));
+    refused(await press(R.SET_CURRENT, '20'), /entre 6 A et 16 A/);
+    ok(await press(R.SET_CURRENT, '16'));
+    assert.equal(dev.get(2000), 16);
+    assert.ok(limitWrites(dev).every((w) => w.value === 0 || (w.value >= 6 && w.value <= 16)));
   } finally {
     stop();
   }
@@ -772,7 +779,7 @@ test('a single read of another limit never lets the pause go: written again over
     await advance(4 * SECOND, 100);
     dev.set(2000, 10);
     await advance(SECOND, 100);
-    while (app.stopGuard?.other === undefined && app.stopGuard) await advance(100, 100);
+    await until(() => app.stopGuard?.other !== undefined || !app.stopGuard, advance, 100, 300);
     dev.set(2000, 16);
     const before = pauses(dev).length;
     await advance(20 * SECOND, 100);
@@ -854,7 +861,7 @@ test('/data stuck: the next check of a pause is armed before any save (15 s, nev
   // After a click whose write left (sendStop saves the new state).
   for (const gap of await gaps(async (t) => {
     t.fire(R.PAUSE, 1);
-    while (pauses(t.dev).length === 0) await t.advance(10, 10);
+    await until(() => pauses(t.dev).length > 0, t.advance, 10, 1000);
   })) {
     assert.ok(gap <= 15_600, `${gap} ms after the click`);
   }
@@ -864,7 +871,7 @@ test('/data stuck: the next check of a pause is armed before any save (15 s, nev
     t.fire(R.PAUSE, 1);
     await t.advance(5 * SECOND, 50);
     t.dev.down = false;
-    while (pauses(t.dev).length === 0) await t.advance(100, 100);
+    await until(() => pauses(t.dev).length > 0, t.advance, 100, 600);
   })) {
     assert.ok(gap <= 15_600, `${gap} ms between two checks`);
   }
@@ -893,7 +900,7 @@ test('the pause is in /data before its first byte leaves', async () => {
     const save = store.save.bind(store);
     let writesAtSave;
     store.save = async (data) => {
-      if (data.stop && writesAtSave === undefined) writesAtSave = pauses(dev).length;
+      if (data.stops?.length > 0 && writesAtSave === undefined) writesAtSave = pauses(dev).length;
       return save(data);
     };
     dev.ignoreWrites = true;
@@ -918,6 +925,388 @@ test('a minimum current above the ceiling: every current refused, nothing sent',
       [0],
     );
     assert.equal(app.config.maxCurrent, 10);
+  } finally {
+    stop();
+  }
+});
+
+test('r1 B1: a /data slow to read (3 s) still gives its pause, written as soon as it is read', async () => {
+  const clock = testClock({ start: NOW });
+  const dev = fakeAmtron({ timers: clock.timers });
+  const store = memoryStore({
+    stops: [{ host: HOST, port: 502, unitId: 1, since: NOW - MINUTE, written: true, from: 16 }],
+  });
+  let release;
+  store.hangLoad = new Promise((resolve) => {
+    release = resolve;
+  });
+  clock.timers.setTimeout(() => release(), 3000);
+  const { app, stop, advance } = await setup({ clock, dev, store, boot: true, getConfigFails: 3 });
+  try {
+    await advance(5 * SECOND, 50);
+    assert.equal(app.memoryUnreadable, true, 'too slow: never overwritten');
+    assert.equal(dev.get(2000), 0, 'the pause kept in /data left');
+    assert.equal(dev.writes()[0].value, 0);
+  } finally {
+    stop();
+  }
+});
+
+test('r1 I1: the keep-alive holds after a failed read, with 131/132 unread, and across a restart', async () => {
+  const clock = testClock({ start: NOW });
+  const store = memoryStore();
+  const reads141 = (dev) => dev.log.filter((r) => r.fc === 3 && r.address === 141).length;
+  const first = await setup({ clock, store, config: { host: HOST, poll_interval: 300 } });
+  try {
+    first.dev.set(132, 20);
+    ok(await first.press(R.PAUSE, 1));
+    await first.advance(30 * SECOND, 100);
+    assert.equal(first.app.keepAlive, 10_000);
+    // (a) A failed read: the next try within the keep-alive, not after the 30 s backoff.
+    first.dev.down = true;
+    await first.advance(11 * SECOND, 100);
+    assert.equal(first.app.unit.online, false);
+    first.dev.down = false;
+    const before = reads141(first.dev);
+    await first.advance(6 * SECOND, 100);
+    assert.ok(reads141(first.dev) > before, 'tried again within 5 s after a failure');
+    // (b) 131/132 refused (and later skipped): the keep-alive stays.
+    first.dev.exceptions.set(131, 4);
+    await first.advance(2 * MINUTE, 500);
+    assert.equal(first.app.keepAlive, 10_000);
+    const mid = reads141(first.dev);
+    await first.advance(MINUTE, 500);
+    assert.ok(reads141(first.dev) - mid >= 5, 'still every 10 s');
+    first.dev.exceptions.delete(131);
+    assert.equal(store.data.keepAlive, 10_000);
+  } finally {
+    first.stop();
+  }
+  // (c) A restart: the first read comes within the keep-alive kept in /data.
+  const second = await setup({
+    clock,
+    store,
+    config: { host: HOST, poll_interval: 300 },
+    create: false,
+  });
+  try {
+    await second.advance(SECOND, 100);
+    assert.ok(reads141(second.dev) > 0, 'read at once after the restart');
+  } finally {
+    second.stop();
+  }
+});
+
+test('r1 I1: the keep-alive never goes under 5 s', async () => {
+  const { app, press, stop, dev, advance } = await setup({
+    config: { host: HOST, poll_interval: 300 },
+  });
+  try {
+    dev.set(132, 4);
+    ok(await press(R.PAUSE, 1));
+    await advance(30 * SECOND, 100);
+    assert.equal(app.keepAlive, 5000);
+    const before = dev.reads().filter((r) => r.address === 141).length;
+    await advance(MINUTE, 100);
+    const reads = dev.reads().filter((r) => r.address === 141).length - before;
+    assert.ok(reads >= 10 && reads <= 13, `${reads} reads in a minute`);
+  } finally {
+    stop();
+  }
+});
+
+/** Two chargers, A at HOST and B at another address, behind one connector. */
+function twoChargers(clock) {
+  const a = fakeAmtron({ timers: clock.timers });
+  const b = fakeAmtron({ timers: clock.timers });
+  b.info.serialNumber = 'BBBB0002';
+  b.set(2000, 10);
+  return {
+    a,
+    b,
+    connectFn: (host) => (host === HOST ? a : b).connect(),
+    identityFn: ({ host }) => (host === HOST ? a : b).readIdentity(),
+    log: [],
+    writes: () => [...a.writes(), ...b.writes()],
+  };
+}
+
+test('r1 I2: a pause held for the old address survives a click to the new one; its values never shown there', async () => {
+  const clock = testClock({ start: NOW });
+  const both = twoChargers(clock);
+  const store = memoryStore();
+  const { app, gladys, press, stop, advance } = await setup({
+    clock,
+    dev: both,
+    store,
+    config: ALLOW,
+  });
+  try {
+    both.a.down = true;
+    refused(await press(R.PAUSE, 1), /pas encore pu partir/);
+    const saving = app.configUpdated({ ...ALLOW, host: '192.168.1.81' });
+    await advance(5 * SECOND, 100);
+    await saving;
+    const bDevice = gladys.fake.discoveredDevices.find((d) => d.external_id.endsWith(':BBBB0002'));
+    assert.ok(bDevice);
+    await gladys.fake.deviceCreated(bDevice);
+    // A command and a pause to B: the pause of A is kept.
+    const bFeature = (role) => ({ external_id: `${bDevice.external_id}:${role}` });
+    let ack = gladys.fake.setValue(bDevice, bFeature(R.SET_CURRENT), '8');
+    await advance(5 * SECOND, 50);
+    ok(await ack);
+    assert.equal(both.b.get(2000), 8);
+    ack = gladys.fake.setValue(bDevice, bFeature(R.PAUSE), 1);
+    await advance(5 * SECOND, 50);
+    ok(await ack);
+    assert.equal(app.stopGuards.size, 1, 'the pause of A is still held');
+    assert.equal(store.data.stops[0].host, HOST);
+    // A comes back: its pause is written; its limit (16 A) never shown on B.
+    both.b.set(2000, 12);
+    await advance(MINUTE, 100);
+    const limitsOf = () =>
+      gladys.fake.states
+        .filter((x) => x.device_feature_external_id === `${bDevice.external_id}:${R.CURRENT_LIMIT}`)
+        .map((x) => x.state);
+    const seen = limitsOf().length;
+    assert.equal(limitsOf().at(-1), 12);
+    both.a.down = false;
+    await advance(MINUTE, 100);
+    assert.equal(both.a.get(2000), 0);
+    const later = limitsOf().slice(seen);
+    assert.ok(
+      later.every((v) => v === 12),
+      `B showed ${later} (the limits of A)`,
+    );
+  } finally {
+    stop();
+  }
+});
+
+test('r1 I3: with a pause held, "current" and "resume" write (never "already done"), and the pause lets go', async () => {
+  for (const [role, value] of [
+    [R.SET_CURRENT, '16'],
+    [R.RESUME, 1],
+  ]) {
+    const { app, press, stop, dev, advance } = await setup({ config: ALLOW });
+    try {
+      dev.ignoreWrites = true;
+      refused(await press(R.PAUSE, 1), /sans confirmation/);
+      assert.ok(app.stopGuard);
+      dev.ignoreWrites = false;
+      const count = limitWrites(dev).length;
+      ok(await press(role, value));
+      assert.ok(limitWrites(dev).length > count, `${role}: written`);
+      assert.equal(app.stopGuard, undefined);
+      await advance(40 * SECOND, 100);
+      assert.equal(dev.get(2000), 16, `${role}: never paused again after its success`);
+    } finally {
+      stop();
+    }
+  }
+});
+
+test('r1 I4: another charger of the same model at the address: its values never on the first device', async () => {
+  const { gladys, stop, dev, advance, state } = await setup();
+  try {
+    dev.info.serialNumber = 'OTHER0001';
+    dev.set32(220, 7000);
+    await advance(31 * SECOND, 100);
+    assert.notEqual(state(R.POWER).state, 7000, 'never on the first device');
+    assert.ok(
+      gladys.fake.discoveredDevices.some((d) =>
+        d.external_id.endsWith(':mennekes-amtron:OTHER0001'),
+      ),
+    );
+    // PublicInfo unreadable: not another charger, the Modbus identity decides.
+    dev.info.serialNumber = SERIAL;
+    await advance(31 * SECOND, 100);
+    dev.infoFails = true;
+    dev.set32(220, 6000);
+    await advance(31 * SECOND, 100);
+    assert.equal(state(R.POWER).state, 6000);
+  } finally {
+    stop();
+  }
+});
+
+test('r1 I5: a pause never written is never let go by values read (M03)', async () => {
+  const { app, stop } = await setup();
+  try {
+    const guard = app.newStopGuard({ host: HOST, port: 502, unitId: 1 }, undefined);
+    const at = app.mono();
+    const decisions = [16, 10, 10, 12, 12].map((limit) => app.decideStop(guard, limit, at));
+    assert.ok(
+      decisions.every((d) => d === 'resend'),
+      decisions.join(','),
+    );
+  } finally {
+    stop();
+  }
+});
+
+test('r1 I5: a check during a read waits for the line, never a second connection (M14)', async () => {
+  const { app, press, stop, dev, advance } = await setup();
+  try {
+    dev.ignoreWrites = true;
+    refused(await press(R.PAUSE, 1), /sans confirmation/);
+    dev.singleClient = true;
+    dev.delay = 100;
+    app.clearTimer();
+    app.lastAttemptAt = -Infinity;
+    const reading = app.tick();
+    await advance(150, 10);
+    const checking = app.runCheck(app.stopGuard);
+    await advance(10 * SECOND, 50);
+    await reading;
+    await checking;
+    assert.equal(dev.maxOpen, 1);
+    assert.equal(dev.refused, 0);
+  } finally {
+    stop();
+  }
+});
+
+test('r1 I5: the pause is tried again after a closed connection (M23) and a refused one (M24)', async () => {
+  const { fire, stop, dev, advance } = await setup();
+  try {
+    dev.closeOnRequest = 1;
+    let ack = fire(R.PAUSE, 1);
+    await advance(3500, 10);
+    ok(await ack);
+    assert.equal(dev.get(2000), 0);
+    dev.set(2000, 16);
+    dev.down = true;
+    ack = fire(R.PAUSE, 1);
+    await advance(1000, 10);
+    dev.down = false;
+    await advance(2500, 10);
+    ok(await ack);
+    assert.equal(dev.get(2000), 0);
+  } finally {
+    stop();
+  }
+});
+
+test('r1 I5: a configuration read before a newer save never wins over it (M39)', async () => {
+  const { app, stop, advance } = await setup();
+  try {
+    let answer;
+    const slow = () =>
+      new Promise((resolve) => {
+        answer = resolve;
+      });
+    const reading = app.onConnected(slow);
+    const saving = app.configUpdated({ host: '192.168.1.90' });
+    await advance(SECOND);
+    answer({ host: HOST });
+    await advance(5 * SECOND);
+    await reading;
+    await saving;
+    assert.equal(app.config.address.host, '192.168.1.90');
+  } finally {
+    stop();
+  }
+});
+
+test('r1 m4: a check that gave its turn to a command is tried again a second later', async () => {
+  const { app, fire, press, stop, dev, advance } = await setup({ config: ALLOW });
+  try {
+    dev.ignoreWrites = true;
+    refused(await press(R.PAUSE, 1), /sans confirmation/);
+    const guard = app.stopGuard;
+    dev.ignoreWrites = false;
+    dev.delay = 100;
+    // A read holds the line; the check waits for it; a command arrives (it fails).
+    app.clearTimer();
+    app.lastAttemptAt = -Infinity;
+    app.tick();
+    await advance(50, 10);
+    app.runCheck(guard);
+    const count = pauses(dev).length;
+    dev.infoFails = true;
+    const ack = fire(R.SET_CURRENT, '8');
+    await advance(4 * SECOND, 50);
+    refused(await ack, /numéro de série/);
+    assert.ok(pauses(dev).length > count, 'checked again within 4 s, not 15 s');
+  } finally {
+    stop();
+  }
+});
+
+test('r1 m3: a click ends the read under way at once (no request of it after the click)', async () => {
+  const store = memoryStore();
+  const { app, fire, stop, dev, advance } = await setup({ store });
+  try {
+    store.hang = new Promise(() => {});
+    dev.delay = 40;
+    app.clearTimer();
+    app.lastAttemptAt = -Infinity;
+    const reading = app.tick();
+    await advance(60, 10);
+    const before = dev.reads().length;
+    fire(R.PAUSE, 1);
+    await advance(150, 10);
+    assert.equal(dev.reads().length, before, 'the read stopped at the click');
+    await advance(5 * SECOND, 50);
+    await reading;
+    assert.equal(dev.get(2000), 0);
+  } finally {
+    stop();
+  }
+});
+
+test('r1 m2: the serial number is read at the address the Modbus connection reached', async () => {
+  const clock = testClock({ start: NOW });
+  const dev = fakeAmtron({ timers: clock.timers });
+  dev.address = '192.168.1.99';
+  const { fire, stop, advance } = await setup({
+    clock,
+    dev,
+    config: { ...ALLOW, host: 'wallbox.local' },
+    create: false,
+  });
+  try {
+    await advance(MINUTE, 500);
+    assert.ok(dev.infoHosts.length > 0);
+    assert.ok(
+      dev.infoHosts.every((h) => h === '192.168.1.99'),
+      dev.infoHosts.join(','),
+    );
+    const ack = fire(R.SET_CURRENT, '8');
+    await advance(4 * SECOND, 50);
+    await ack;
+    assert.ok(
+      dev.infoHosts.every((h) => h === '192.168.1.99'),
+      'the command too',
+    );
+  } finally {
+    stop();
+  }
+});
+
+test('r1 I1: during a pause kept alive, a charger down is tried every 5 s, not at the interval', async () => {
+  const { app, press, stop, dev, advance, clock } = await setup({
+    config: { host: HOST, poll_interval: 300 },
+  });
+  try {
+    dev.set(132, 20);
+    ok(await press(R.PAUSE, 1));
+    await advance(30 * SECOND, 100);
+    assert.equal(app.keepAlive, 10_000);
+    dev.down = true;
+    const times = [];
+    let count = dev.connections;
+    for (let i = 0; i < 400; i += 1) {
+      await advance(100, 100);
+      if (dev.connections !== count) {
+        count = dev.connections;
+        times.push(clock.monotonic());
+      }
+    }
+    const gaps = times.slice(2).map((t, i) => t - times[i + 1]);
+    assert.ok(gaps.length >= 3, `${times.length} attempts`);
+    assert.ok(Math.max(...gaps) <= 5_600, `gaps ${gaps.map(Math.round)}`);
   } finally {
     stop();
   }

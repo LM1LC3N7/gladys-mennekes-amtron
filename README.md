@@ -5,7 +5,7 @@
 network (port 502, no cloud, no password): status, vehicle plugged in, power, current and voltage
 per phase, energy meter (guarded), energy and duration of the session, current offered and limit
 set; **pause** never held back, **resume** and the **charging current** behind an off-by-default
-option, bounded by the model and the configuration. **Never tested with a real device. Not
+option, bounded by the configuration (16 A at most, as the document says). **Never tested with a real device. Not
 affiliated with MENNEKES.** Modbus TCP has no authentication: keep the charger on a trusted
 network.
 
@@ -29,19 +29,21 @@ Gladys ⇄ SDK ⇄ src/handlers.js ⇄ src/app.js (AmtronApp)
   the manufacturer's document (protocol 1.5), the Device Id and model first, then closed. The
   test button, Discovery, a reconnection and a restart never read sooner than the interval (time
   kept in `/data` before the read). While a limit below the Safe Current is set, at least every
-  half communication timeout of the charger (never under 5 s).
+  half communication timeout of the charger (never under 5 s), after a failed read and a restart
+  too.
 - **Device**: `ext:<selector>:mennekes-amtron:<SERIAL>` (frozen rule), the serial number read on
-  the web interface (`/api/v1/PublicInfo`, no login) once per address, every hour and after every
-  outage, kept in `/data` with the Modbus model; a read whose Device Id or model does not match
+  the web interface (`/api/v1/PublicInfo`, no login) with every read and before every command, at
+  the address the Modbus session reached, kept in `/data` with the Modbus model; another serial is
+  another device; with the page unreadable, a read whose Device Id or model does not match
   publishes nothing.
 - **Pause** (protective): 2000 = 0 A, never behind the option, a read, a command, a backoff or the
   identity; drops every command that arrived before; retried for 3 s; kept in `/data` and checked
-  every 15 s, never ended by time: let go on the pause read, on another limit read twice in a row
-  once it was written, or on a newer current sent; written again at a restart before the
-  configuration is read.
+  every 15 s, one per charger, never ended by time: let go on the pause read, on another limit read
+  twice in a row once it was written, or on a newer current sent to that charger; written again at
+  a restart before the configuration is read (also when /data is slow to read).
 - **Commands** (`allow_commands`, off by default): resume (the current read before the pause) and
-  the charging current (6 A to min(ceiling, 16 A or 32 A for a 22 kW model), never below register
-  712). Serial number read over HTTP for each command, fresh Modbus read (Device Id, model, HEMS
+  the charging current (6 A to the ceiling, 16 A at most as the document says, never below register
+  712); with a pause held, they always write. Serial number read over HTTP for each command, fresh Modbus read (Device Id, model, HEMS
   mode, limit), write checked again at the protocol layer, echo and read back.
 
 ## Development

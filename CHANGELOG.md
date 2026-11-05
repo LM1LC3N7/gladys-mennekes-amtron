@@ -19,5 +19,6 @@ the notes of the version's GitHub Release.
   offered to the vehicle, current limit set.
 - The device keyed on the serial number read on the web interface of the charger (PublicInfo).
 - "Pause charging" (HEMS limit 0 A), never held back, kept and checked until the charger shows it.
-- "Resume charging" and the charging current, off by default, bounded by the configuration, the
+- "Resume charging" and the charging current, off by default, 6 A to 16 A (the range of the
+  manufacturer's document), bounded by the configuration and the
   model and the minimum current of the charger.

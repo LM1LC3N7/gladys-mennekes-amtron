@@ -58,7 +58,7 @@ test/kit/                 virtual and real clocks, fake TCP server (from gladys-
   `language`, the actions `test_connection` and `accept_held_index`).
 - **Registers from the manufacturer's document only** (protocol 1.5); a block
   is a run of documented registers (`test/protocol.test.js`, the fake refuses
-  the rest). The only write: 2000, function 6, 0 or 6 A to 32 A.
+  the rest). The only write: 2000, function 6, 0 or 6 A to 16 A (the document's range).
 - **One Modbus connection at a time, one request at a time**: everything goes
   through `useLine`; commands take the line from a poll, the pause from
   anything.

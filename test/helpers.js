@@ -69,7 +69,8 @@ export async function setup({
     }
   };
   if (boot) {
-    await app.boot();
+    // As index.js: never awaited (a slow /data is waited for on the virtual clock).
+    app.boot().catch(() => {});
   }
   const connecting = gladys.connect();
   await settle();

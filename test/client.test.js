@@ -64,3 +64,15 @@ test('an answer with another transaction or unit id is not taken', async () => {
     await assert.rejects(p, /another request/);
   }
 });
+
+test('one request in flight at a time: a second one is refused, nothing written for it', async () => {
+  const { s, socket } = session();
+  const first = s.request(Buffer.from([3, 0, 141, 0, 1]));
+  const second = s.request(Buffer.from([3, 0, 122, 0, 1]));
+  // Bounded: a second request written would never be answered here (the test fails, never hangs).
+  const late = new Promise((_, reject) => setTimeout(() => reject(new Error('no answer')), 500));
+  await assert.rejects(Promise.race([second, late]), /already waiting/);
+  assert.equal(socket.sent.length, 1);
+  s.abort();
+  await assert.rejects(first);
+});

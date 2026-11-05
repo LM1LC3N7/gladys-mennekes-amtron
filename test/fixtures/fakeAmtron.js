@@ -62,6 +62,8 @@ class FakeSocket extends EventEmitter {
     super();
     this.dev = dev;
     this.destroyed = false;
+    /** The address the connection reached (a host name resolved by the system). */
+    this.remoteAddress = dev.address;
   }
 
   write(bytes) {
@@ -116,9 +118,14 @@ export function fakeAmtron({ timers, unitId = 1 } = {}) {
     ignoreWrites: false,
     applyDelay: 0,
     badEcho: false,
+    /** The next requests that close the connection instead of being answered (another client, a reset). */
+    closeOnRequest: 0,
     timers,
     singleClient: false,
-    /** PublicInfo (HTTP): the answer, a failure, its calls. */
+    /** The address a connection reaches (undefined: none given, as before resolution). */
+    address: undefined,
+    /** PublicInfo (HTTP): the hosts asked, the answer, a failure, its calls. */
+    infoHosts: [],
     info: { serialNumber: SERIAL, articleName: 'AMTRON 4You 560', currentVersion: '1.5.21' },
     infoFails: false,
     infoDelay: 5,
@@ -154,6 +161,11 @@ export function fakeAmtron({ timers, unitId = 1 } = {}) {
       else if (fc === 6) entry = { fc, address, value: pdu.readUInt16BE(3) };
       else entry = { fc, address };
       dev.log.push(entry);
+      if (dev.closeOnRequest > 0) {
+        dev.closeOnRequest -= 1;
+        socket.destroy();
+        return;
+      }
       if (dev.silent.has(address) || (fc === 3 && dev.silentReads.has(address))) return;
       timers.setTimeout(() => {
         if (socket.destroyed) return;
@@ -216,8 +228,9 @@ export function fakeAmtron({ timers, unitId = 1 } = {}) {
       return socket;
     },
     /** The PublicInfo read the app takes by injection (src/publicinfo.js shape). */
-    readIdentity() {
+    readIdentity(options) {
       dev.infoCalls += 1;
+      dev.infoHosts.push(options?.host);
       return new Promise((resolve, reject) => {
         timers.setTimeout(() => {
           if (dev.infoFails || dev.down) {
@@ -236,6 +249,6 @@ export function fakeAmtron({ timers, unitId = 1 } = {}) {
     reads: () => dev.log.filter((r) => r.fc === 3),
   };
   dev.connectFn = () => dev.connect();
-  dev.identityFn = () => dev.readIdentity();
+  dev.identityFn = (options) => dev.readIdentity(options);
   return dev;
 }

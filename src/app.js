@@ -42,8 +42,8 @@
 //     command and whose Device Id and model are read in the same Modbus
 //     session; refused when the HEMS mode (2010) is not "read and write";
 //   - bounded on arrival (6 A to the configured ceiling) and on the fresh
-//     read (the maximum of the model, the minimum current read, 712), and
-//     once more in src/modbus/protocol.js (0, or 6 A to 32 A, register 2000
+//     read (16 A, the document's maximum; the minimum current read, 712), and
+//     once more in src/modbus/protocol.js (0, or 6 A to 16 A, register 2000
 //     only); "Resume" sets the last current read before the pause, bounded
 //     the same way, or is refused when none is known;
 //   - decided on a fresh read in the same session, never on the state in
@@ -92,7 +92,7 @@ import {
 import { SERVICE, buildDevice, deviceStates, idsOf, parseFeatureId } from './devices.js';
 import { IndexGuard, margin } from './guard.js';
 import { ERRORS, T, age, join, word } from './i18n.js';
-import { interpret, modelMax } from './model.js';
+import { interpret } from './model.js';
 import { ERROR_KINDS, ModbusError, errorReason, openSession, tcpConnect } from './modbus/client.js';
 import {
   decodeBlock,
@@ -126,6 +126,9 @@ const freshUnit = () => ({
 });
 
 const monotonic = () => performance.now();
+
+/** The key of a charger: address, port, unit id. */
+const targetKey = (t) => `${t.host}:${t.port}:${t.unitId}`;
 
 const sameTarget = (a, b) =>
   Boolean(a && b) && a.host === b.host && a.port === b.port && a.unitId === b.unitId;
@@ -224,8 +227,8 @@ export class AmtronApp {
     this.protectSeq = 0;
     /** When the last write left (a read begun before it is not applied). */
     this.lastSentAt = -Infinity;
-    /** The pause not seen applied (register 2000 = 0), or undefined. */
-    this.stopGuard = undefined;
+    /** The pauses not seen applied (register 2000 = 0), one per charger (targetKey). */
+    this.stopGuards = new Map();
     this.checking = false;
     /** Counter guards: role -> IndexGuard, for `counterSerial` (session dates). */
     this.counterGuards = new Map();
@@ -235,10 +238,8 @@ export class AmtronApp {
     this.keptWall = undefined;
     /** The first press of "Accept the held index": { serial, list, at, listedAt }. */
     this.pendingAccept = undefined;
-    /** The serial number over HTTP: { running, okAt, triedAt, error, firmware, other }. */
-    this.identity = { running: undefined, okAt: -Infinity, triedAt: -Infinity };
-    /** Set when the charger came back after an outage: its serial is read again. */
-    this.recovered = false;
+    /** The serial number over HTTP, read with every read: { error, firmware } of the last one. */
+    this.identity = {};
     /** While a limit below the Safe Current is set: the longest wait between two reads (ms). */
     this.keepAlive = undefined;
   }
@@ -246,6 +247,24 @@ export class AmtronApp {
   /** The monotonic clock (every in-memory time). */
   mono() {
     return this.clock();
+  }
+
+  /** The pause held for the charger of the configuration (else any other one held), or undefined. */
+  get stopGuard() {
+    const target = this.target();
+    return (
+      (target && this.stopGuards.get(targetKey(target))) ?? this.stopGuards.values().next().value
+    );
+  }
+
+  /** The pause held for `target`, or undefined. */
+  guardOf(target) {
+    return target ? this.stopGuards.get(targetKey(target)) : undefined;
+  }
+
+  /** Whether `guard` is still the pause held for its charger. */
+  alive(guard) {
+    return Boolean(guard) && this.stopGuards.get(targetKey(guard.target)) === guard;
   }
 
   /** The session clock (ms since epoch): never moved by a wall clock set by NTP. */
@@ -270,14 +289,13 @@ export class AmtronApp {
   loadMemory() {
     if (!this.memoryLoaded) {
       this.memoryLoaded = (async () => {
+        const loading = Promise.resolve().then(() => this.store.load());
         let result;
         try {
-          result = await bounded(
-            Promise.resolve().then(() => this.store.load()),
-            TIMINGS.storeWait,
-            this.timers,
-            () => ({ unreadable: true, slow: true }),
-          );
+          result = await bounded(loading, TIMINGS.storeWait, this.timers, () => ({
+            unreadable: true,
+            slow: true,
+          }));
         } catch {
           result = { unreadable: true };
         }
@@ -287,6 +305,20 @@ export class AmtronApp {
             `MENNEKES AMTRON: /data/mennekes-amtron-state.json ${result.slow ? 'too slow to read' : 'cannot be read'}: it is never overwritten`,
           );
           this.memory = normalizeMemory(null, this.now());
+          if (result.slow) {
+            // Read later all the same: its pauses are written then (never lost to a slow
+            // disk); nothing else of it is taken, and the file is still never overwritten.
+            loading
+              .then((late) => {
+                if (late?.unreadable || this.closed) return;
+                const kept = normalizeMemory(late?.data ?? null, this.now());
+                if (kept.stops.length > 0) {
+                  this.logger.warn('MENNEKES AMTRON: /data read late: its pauses are written now');
+                }
+                this.resumeKeptStops(kept.stops);
+              })
+              .catch(() => {});
+          }
           return;
         }
         this.memory = normalizeMemory(result?.data ?? null, this.now());
@@ -324,38 +356,49 @@ export class AmtronApp {
     this.saveMemory().catch(() => {});
   }
 
-  /** The pause not seen applied, in /data (or none). */
+  /** The pauses not seen applied, in /data (or none). */
   persistStop() {
-    const g = this.stopGuard;
-    const stop = g
-      ? { ...g.target, since: g.since, written: g.written, from: g.from ?? null }
-      : null;
-    if (JSON.stringify(stop) === JSON.stringify(this.memory.stop ?? null)) {
+    const stops = [...this.stopGuards.values()].map((g) => ({
+      ...g.target,
+      since: g.since,
+      written: g.written,
+      from: g.from ?? null,
+    }));
+    if (JSON.stringify(stops) === JSON.stringify(this.memory.stops ?? [])) {
       return Promise.resolve(true);
     }
-    this.memory.stop = stop;
+    this.memory.stops = stops;
+    // The first one also as `stop`, the field an older version reads.
+    this.memory.stop = stops[0] ?? null;
     return this.saveMemory();
   }
 
   /**
-   * At the start of the container, before the configuration is read: a pause
-   * kept in /data (not seen applied before the restart) is written again at
-   * once to the charger it was sent to, without a read first, then checked
-   * every 15 s like any pause.
+   * Pauses read from /data: each one is written again at once to the charger
+   * it was sent to, without a read first, then checked every 15 s like any
+   * pause. A pause already held for that charger is kept as it is.
+   */
+  resumeKeptStops(stops) {
+    for (const kept of stops ?? []) {
+      const target = { host: kept.host, port: kept.port, unitId: kept.unitId };
+      if (this.guardOf(target)) continue;
+      const guard = this.newStopGuard(target, undefined);
+      guard.since = kept.since;
+      this.stopGuards.set(targetKey(target), guard);
+      this.logger.warn('MENNEKES AMTRON: a pause kept in /data is written again');
+      this.queueStop({ target, received: this.mono(), fromBoot: true });
+    }
+  }
+
+  /**
+   * At the start of the container, before the configuration is read: the
+   * pauses kept in /data (not seen applied before the restart) are written
+   * again. A /data too slow to read (2 s) still gives its pauses when it
+   * answers later (loadMemory).
    */
   async boot() {
     await this.loadMemory();
-    const kept = this.memory.stop;
-    if (!kept) {
-      return;
-    }
-    const target = { host: kept.host, port: kept.port, unitId: kept.unitId };
-    if (!this.stopGuard) {
-      this.stopGuard = this.newStopGuard(target, undefined);
-      this.stopGuard.since = kept.since;
-    }
-    this.logger.warn('MENNEKES AMTRON: a pause kept in /data is written again');
-    this.queueStop({ target, received: this.mono(), fromBoot: true });
+    this.resumeKeptStops(this.memory.stops);
   }
 
   // --- Lifecycle -------------------------------------------------------------
@@ -380,8 +423,15 @@ export class AmtronApp {
     this.absent.clear();
     this.answered.clear();
     this.optional.clear();
-    this.keepAlive = undefined;
-    this.identity = { running: undefined, okAt: -Infinity, triedAt: -Infinity };
+    // The keep-alive of the last run, for the same charger (the first read comes within it).
+    this.safety = undefined;
+    this.keepAlive =
+      !this.memoryUnreadable &&
+      this.memory.keepAlive &&
+      sameTarget(this.memory.target, this.target())
+        ? this.memory.keepAlive
+        : undefined;
+    this.identity = {};
     this.published = undefined;
     this.badge = undefined;
     this.lastStatus = undefined;
@@ -413,6 +463,11 @@ export class AmtronApp {
     if (stored === null) {
       return 0;
     }
+    if (this.keepAlive !== undefined) {
+      // A limit below the Safe Current was set: the last read may be up to a minute
+      // older than kept, so the charger is read at once (it must hear from Gladys).
+      return 0;
+    }
     this.lastAttemptAt = Math.max(this.lastAttemptAt, this.mono() - (this.now() - stored));
     // A read may have left up to a minute after the time kept (written at most once a minute).
     const due = stored + TIMINGS.attemptWriteEvery + this.interval;
@@ -440,9 +495,9 @@ export class AmtronApp {
   /** The container stops: every timer, the check of the pause too (it is in /data). */
   shutdown() {
     this.stop();
-    if (this.stopGuard?.timer) {
-      this.timers.clearTimeout(this.stopGuard.timer);
-      this.stopGuard.timer = undefined;
+    for (const guard of this.stopGuards.values()) {
+      if (guard.timer) this.timers.clearTimeout(guard.timer);
+      guard.timer = undefined;
     }
     this.closed = true;
   }
@@ -575,11 +630,6 @@ export class AmtronApp {
       this.logger.info(
         `MENNEKES AMTRON resume and current ${this.config.allowCommands ? 'allowed' : 'disabled'}`,
       );
-    }
-    if (this.config.apiPort !== previous.apiPort) {
-      // Another HTTP port: the serial number may be read at once.
-      this.identity.triedAt = -Infinity;
-      this.maybeCheckIdentity();
     }
     if (
       this.config.language !== previous.language ||
@@ -739,7 +789,13 @@ export class AmtronApp {
     this.clearTimer();
     if (this.closed) return;
     let wait = delay ?? (u.online === false ? u.wait : this.interval);
-    wait = Math.max(wait ?? this.interval, Math.min(this.interval, this.due - this.mono()), 0);
+    if (u.online === false && this.keepAlive !== undefined) {
+      // A failed read while a limit below the Safe Current is set: tried again within
+      // 5 s (the charger must hear from Gladys before its timeout), not the interval.
+      wait = Math.max(0, wait ?? this.keepAlive);
+    } else {
+      wait = Math.max(wait ?? this.interval, Math.min(this.interval, this.due - this.mono()), 0);
+    }
     const generation = this.generation;
     u.timer = this.timers.setTimeout(() => {
       u.timer = undefined;
@@ -793,12 +849,18 @@ export class AmtronApp {
     const startedAt = this.mono();
     let result;
     let failure;
+    let identity;
     try {
       result = await this.useLine(
         'read',
         target,
         TIMINGS.connectTimeout,
-        (session) => this.readAll(session),
+        (session) => {
+          // The serial number over HTTP, at the address this very session reached,
+          // alongside the Modbus reads (never holding the line).
+          identity = this.readSerial(session, target);
+          return this.readAll(session);
+        },
         { yieldTo: () => this.reserved > 0 || this.stops.length > 0 },
       );
     } catch (err) {
@@ -816,7 +878,15 @@ export class AmtronApp {
       // Begun before a command left: it may show the state before it.
       this.logger.debug('MENNEKES AMTRON: read begun before a command, not applied');
     } else {
-      await this.applyRead(result, startedAt);
+      const serial = identity
+        ? await bounded(identity, TIMINGS.identityTimeout + 200, this.timers, () => ({
+            error: 'timeout',
+          }))
+        : undefined;
+      if (generation !== this.generation) {
+        return;
+      }
+      await this.applyRead(result, startedAt, serial);
     }
     if (generation !== this.generation) {
       return;
@@ -918,13 +988,24 @@ export class AmtronApp {
     return values.model === id.model ? id.serial : undefined;
   }
 
+  /**
+   * The serial number over HTTP for a Modbus session: PublicInfo at the
+   * address the session reached (a host name is resolved once, the HTTP and
+   * the Modbus requests go to the same charger). Resolves `{ info }` or
+   * `{ error }`, never rejects; undefined without an HTTP port.
+   */
+  readSerial(session, target, timeoutMs = TIMINGS.identityTimeout) {
+    if (!this.config.apiPort) return undefined;
+    const host = session?.socket?.remoteAddress || target.host;
+    return this.fetchIdentity({ host }, timeoutMs).then(
+      (info) => ({ info }),
+      (err) => ({ error: err?.kind ?? 'error' }),
+    );
+  }
+
   /** A read: the values of this read only (a value not read is unknown). */
-  async applyRead({ values, failed }, startedAt) {
+  async applyRead({ values, failed }, startedAt, serial) {
     const u = this.unit;
-    if (u.online === false) {
-      // Back after an outage: the serial number is read again (another charger may answer).
-      this.recovered = true;
-    }
     u.online = true;
     u.failures = 0;
     u.wait = undefined;
@@ -940,8 +1021,17 @@ export class AmtronApp {
     // The stop sees the raw limit, whatever the identity (it was sent to this address).
     this.observe(values, startedAt);
     this.updateKeepAlive(values);
+    if (serial?.info) {
+      this.identity.error = undefined;
+      this.identity.firmware = serial.info.firmware;
+      if (values.isAmtron === true && values.model) {
+        this.identified(target, serial.info.serial, values.model);
+      }
+    } else if (serial?.error) {
+      // Unreadable is not another charger: the Device Id and the model decide.
+      this.identity.error = serial.error;
+    }
     await this.adopt(values);
-    this.maybeCheckIdentity();
   }
 
   /** The values of a read go to the device of their serial number, when it is known. */
@@ -974,29 +1064,41 @@ export class AmtronApp {
   /**
    * The keep-alive: a charger in HEMS read and write mode that hears nothing
    * for its communication timeout applies its Safe Current. While the limit
-   * read is below it (a pause included), the reads come at least every half
-   * timeout (never more often than every 5 s).
+   * is below it (a pause included), the reads come at least every half
+   * timeout (never more often than every 5 s for this reason). A value not
+   * read this time keeps the last one read (131, 132, 2010 skipped or
+   * refused never end the keep-alive); a limit below 6 A with a Safe Current
+   * never read keeps it too (5 s, in doubt). Kept in /data: the first read
+   * after a restart comes within it.
    */
   updateKeepAlive(values) {
-    const { hemsMode, commTimeout, safeCurrent, hemsLimit } = values;
-    const before = this.keepAlive;
-    if (
-      hemsMode === HEMS_MODES.READ_WRITE &&
-      Number.isInteger(commTimeout) &&
-      commTimeout > 0 &&
-      Number.isInteger(safeCurrent) &&
-      Number.isInteger(hemsLimit) &&
-      hemsLimit < safeCurrent
-    ) {
-      this.keepAlive = Math.max(TIMINGS.keepAliveMin, (commTimeout * SECOND) / 2);
-    } else if (hemsMode !== undefined || hemsLimit !== undefined) {
-      // Known not to be needed (unknown values keep what was decided before).
-      this.keepAlive = undefined;
+    const known = this.safety ?? {};
+    for (const key of ['hemsMode', 'commTimeout', 'safeCurrent', 'hemsLimit']) {
+      if (values[key] !== undefined) known[key] = values[key];
     }
-    if (before !== this.keepAlive && this.keepAlive !== undefined) {
-      this.logger.info(
-        `MENNEKES AMTRON: reads every ${Math.round(this.interval / SECOND)} s to keep the limit set`,
-      );
+    this.safety = known;
+    const { hemsMode, commTimeout, safeCurrent, hemsLimit } = known;
+    const before = this.keepAlive;
+    if (hemsMode !== undefined && hemsMode !== HEMS_MODES.READ_WRITE) {
+      this.keepAlive = undefined;
+    } else if (!Number.isInteger(hemsLimit)) {
+      // The limit was never read: what was decided before stays.
+    } else if (Number.isInteger(safeCurrent) && hemsLimit >= safeCurrent) {
+      this.keepAlive = undefined;
+    } else if (Number.isInteger(safeCurrent) || pausing(hemsLimit)) {
+      this.keepAlive =
+        Number.isInteger(commTimeout) && commTimeout > 0
+          ? Math.max(TIMINGS.keepAliveMin, (commTimeout * SECOND) / 2)
+          : TIMINGS.keepAliveMin;
+    }
+    if (before !== this.keepAlive) {
+      if (this.keepAlive !== undefined) {
+        this.logger.info(
+          `MENNEKES AMTRON: reads every ${Math.round(this.interval / SECOND)} s to keep the limit set`,
+        );
+      }
+      this.memory.keepAlive = this.keepAlive ?? null;
+      this.saveLater();
     }
   }
 
@@ -1010,62 +1112,14 @@ export class AmtronApp {
     );
     u.failures += 1;
     u.online = false;
-    u.wait = wait;
+    // While a limit below the Safe Current is set, a failed read never waits longer.
+    u.wait = this.keepAlive === undefined ? wait : Math.min(wait, TIMINGS.keepAliveMin);
     u.error = reason;
-    this.logger.warn(`MENNEKES AMTRON: ${reason}; next try in ${Math.round(wait / 1000)} s`);
-    return wait;
+    this.logger.warn(`MENNEKES AMTRON: ${reason}; next try in ${Math.round(u.wait / 1000)} s`);
+    return u.wait;
   }
 
   // --- Identity (HTTP) ------------------------------------------------------------
-
-  /** Whether the serial number must be read now (and may: spaced after a failure). */
-  identityDue() {
-    const raw = this.unit.raw;
-    if (!this.config.apiPort || !this.target() || this.identity.running) return false;
-    if (!raw || raw.isAmtron !== true || !raw.model) return false;
-    const now = this.mono();
-    const id = this.knownIdentity();
-    const needed =
-      !id ||
-      id.model !== raw.model ||
-      this.recovered ||
-      now - this.identity.okAt >= TIMINGS.identityEvery;
-    // Spaced only after a failure: a model that changed is checked at once.
-    const spaced =
-      this.identity.error === undefined || now - this.identity.triedAt >= TIMINGS.identityRetry;
-    return needed && spaced;
-  }
-
-  /** Reads the serial number in the background when due (never holding a read nor a command). */
-  maybeCheckIdentity() {
-    if (!this.identityDue()) return;
-    const generation = this.generation;
-    const model = this.unit.raw.model;
-    const target = this.target();
-    this.identity.triedAt = this.mono();
-    this.identity.running = this.fetchIdentity(target, TIMINGS.identityTimeout)
-      .then(async (info) => {
-        if (generation !== this.generation || !sameTarget(target, this.target())) return;
-        this.identity.okAt = this.mono();
-        this.identity.error = undefined;
-        // Read again after the outage: done (until the next one).
-        this.recovered = false;
-        this.identity.firmware = info.firmware;
-        await this.identified(target, info, model);
-      })
-      .catch((err) => {
-        if (generation !== this.generation) return;
-        this.identity.error = err?.kind ?? 'error';
-        this.logger.warn(
-          `MENNEKES AMTRON: the serial number could not be read over HTTP (${this.identity.error})`,
-        );
-        this.lastStatus = undefined;
-        return this.updateStatus();
-      })
-      .finally(() => {
-        this.identity.running = undefined;
-      });
-  }
 
   /** One read of PublicInfo at the address of `target`, bounded. */
   fetchIdentity(target, timeoutMs) {
@@ -1080,27 +1134,21 @@ export class AmtronApp {
   }
 
   /**
-   * A serial number read: the identity of this address. The same serial
-   * keeps its device (its model is the one read now); another one is another
-   * charger (a new device, the old one shown unreachable).
+   * A serial number read with a read: the identity of this address. The same
+   * serial keeps its device (its model is the one read now); another one is
+   * another charger (a new device, the old one shown unreachable).
    */
-  async identified(target, info, model) {
+  identified(target, serial, model) {
     const kept = this.knownIdentity();
-    if (kept && kept.serial === info.serial && kept.model === model) {
+    if (kept && kept.serial === serial && kept.model === model) {
       return;
     }
-    if (kept && kept.serial !== info.serial) {
+    if (kept && kept.serial !== serial) {
       this.logger.warn('MENNEKES AMTRON: another charger answers at this address');
     }
-    this.memory.identity = { ...target, serial: info.serial, model };
-    this.saveLater();
-    // The last read, when recent, goes to that device at once.
-    const u = this.unit;
-    if (u.raw && u.online === true && this.mono() - u.readAt <= TIMINGS.freshFor) {
-      await this.adopt(u.raw);
-    }
+    this.memory.identity = { ...target, serial, model };
     this.published = undefined;
-    await this.publishAll();
+    this.saveLater();
   }
 
   // --- Status ------------------------------------------------------------------------
@@ -1108,8 +1156,9 @@ export class AmtronApp {
   /** Notes added to every status: the pause held, the index held, the Safe Current. */
   notes(text) {
     let out = text;
-    if (this.stopGuard) {
-      out = join(out, T.stopHeld(age(Math.max(0, this.now() - this.stopGuard.since))));
+    const held = this.stopGuard;
+    if (held) {
+      out = join(out, T.stopHeld(age(Math.max(0, this.now() - held.since))));
     }
     for (const [, guard] of this.counterGuards) {
       if (guard.held) out = join(out, T.indexHeld(guard.held));
@@ -1344,8 +1393,9 @@ export class AmtronApp {
   }
 
   /** The highest current Gladys may set on a charger of `model` now. */
-  ceilingFor(model) {
-    return Math.min(this.config.maxCurrent, modelMax(model));
+  ceilingFor() {
+    // The document: 6 A to 16 A for every model (CURRENT.max caps the configuration).
+    return Math.min(this.config.maxCurrent, CURRENT.max);
   }
 
   async publishAll() {
@@ -1755,17 +1805,12 @@ export class AmtronApp {
    * The serial number of the charger read over HTTP for this command: the one
    * of the device clicked, else refused (nothing sent).
    */
-  async checkSerial(job, timeoutMs) {
-    if (!this.config.apiPort) {
+  async checkSerial(job, timeoutMs, session) {
+    const read = await this.readSerial(session, job.target, timeoutMs);
+    if (!read?.info) {
       throw this.refusal(ERRORS.unknownIdentity);
     }
-    let info;
-    try {
-      info = await this.fetchIdentity(job.target, timeoutMs);
-    } catch {
-      throw this.refusal(ERRORS.unknownIdentity);
-    }
-    if (info.serial !== job.plan.serial) {
+    if (read.info.serial !== job.plan.serial) {
       throw this.refusal(ERRORS.otherDevice);
     }
   }
@@ -1780,7 +1825,7 @@ export class AmtronApp {
     }
     this.checkCommand(job);
     // The serial number over HTTP, then the Device Id and the model over Modbus.
-    await this.checkSerial(job, Math.min(TIMINGS.commandIdentityMax, left()));
+    await this.checkSerial(job, Math.min(TIMINGS.commandIdentityMax, left()), session);
     const readMs = Math.min(TIMINGS.commandReadMax, left());
     if (readMs < TIMINGS.commandMinRead) {
       throw this.refusal(ERRORS.tooSlow);
@@ -1812,7 +1857,7 @@ export class AmtronApp {
     if (fresh.hemsLimit === undefined) {
       throw this.refusal(ERRORS.unknownValue);
     }
-    this.noteValues(fresh);
+    this.noteValues(fresh, job.target);
     const ceiling = this.ceilingFor(fresh.model);
     // The minimum the charger gives raises the floor; above the ceiling, nothing fits.
     const floor =
@@ -1823,8 +1868,11 @@ export class AmtronApp {
       throw this.refusal(ERRORS.outOfBounds(floor, ceiling));
     }
     let value;
+    // A pause held for this charger (sent, not seen applied yet): never "already done"
+    // without writing; the write lets that pause go.
+    const pauseHeld = Boolean(this.guardOf(job.target));
     if (plan.role === R.RESUME) {
-      if (!pausing(fresh.hemsLimit)) {
+      if (!pausing(fresh.hemsLimit) && !pauseHeld) {
         this.logger.info('MENNEKES AMTRON: resume: the charge is not paused, nothing sent');
         return;
       }
@@ -1839,7 +1887,7 @@ export class AmtronApp {
         throw this.refusal(ERRORS.outOfBounds(floor, ceiling));
       }
       value = plan.asked;
-      if (fresh.hemsLimit === value) {
+      if (fresh.hemsLimit === value && !pauseHeld) {
         this.logger.info(`MENNEKES AMTRON: current already ${value} A, nothing sent`);
         return;
       }
@@ -1860,7 +1908,7 @@ export class AmtronApp {
           state.sent.push(REG.HEMS_LIMIT);
           this.lastSentAt = this.mono();
           // A newer current left: an older pause is never written again after it.
-          this.dropStopGuard('a newer current was sent');
+          this.dropStopGuard(this.guardOf(job.target), 'a newer current was sent');
         },
       });
     } catch (err) {
@@ -1875,7 +1923,7 @@ export class AmtronApp {
     }
     // Confirmed only by the value read back equal to the value asked.
     const back = await this.readValues(session, ['hems'], { timeoutMs: TIMINGS.requestTimeout });
-    this.noteValues(back);
+    this.noteValues(back, job.target);
     if (back.hemsLimit !== value) {
       throw new ModbusError(
         ERROR_KINDS.PROTOCOL,
@@ -1888,9 +1936,10 @@ export class AmtronApp {
   }
 
   /** Values a command or a stop read: in memory and to Gladys in the background. */
-  noteValues(values) {
+  noteValues(values, target) {
     const u = this.unit;
-    if (u.online !== true || !u.values) {
+    // Only the charger of the configuration: a pause held for an old address shows nothing.
+    if (u.online !== true || !u.values || !sameTarget(target, this.target())) {
       return;
     }
     const copy = {};
@@ -2045,11 +2094,12 @@ export class AmtronApp {
   async sendStop(job) {
     const { target, state } = job;
     const retryUntil = Math.max(job.received, this.mono()) + TIMINGS.commandSendBy;
-    if (!this.stopGuard || !sameTarget(this.stopGuard.target, target)) {
-      if (this.stopGuard) this.dropStopGuard('a pause to another address');
-      this.stopGuard = this.newStopGuard(target, undefined);
+    // One pause held per charger: a pause to another address never lets this one go.
+    let guard = this.guardOf(target);
+    if (!guard) {
+      guard = this.newStopGuard(target, undefined);
+      this.stopGuards.set(targetKey(target), guard);
     }
-    const guard = this.stopGuard;
     if (!job.fromBoot) {
       guard.since = this.now();
     }
@@ -2071,7 +2121,7 @@ export class AmtronApp {
           state.written = true;
           const at = this.mono();
           this.lastSentAt = at;
-          if (this.stopGuard === guard) {
+          if (this.alive(guard)) {
             guard.written = true;
             guard.sentAt = at;
             // The limit it replaces is read after the write, in this session (never a poll's).
@@ -2086,7 +2136,7 @@ export class AmtronApp {
       }
       back = await this.readValues(session, ['hems']);
       const limit = back.hemsLimit;
-      if (this.stopGuard === guard && Number.isInteger(limit) && !pausing(limit)) {
+      if (this.alive(guard) && Number.isInteger(limit) && !pausing(limit)) {
         // Still running right after the write: the limit it replaces (never "changed elsewhere").
         guard.from = limit;
       }
@@ -2108,12 +2158,12 @@ export class AmtronApp {
       }
     }
     const confirmed = back !== undefined && pausing(back.hemsLimit);
-    if (this.stopGuard === guard) {
+    if (this.alive(guard)) {
       if (confirmed) {
-        this.dropStopGuard('applied');
+        this.dropStopGuard(guard, 'applied');
       } else {
         // Armed first: a stuck /data never holds the next check.
-        this.armStopCheck();
+        this.armStopCheck(guard);
         this.persistStop().catch(() => {});
       }
     }
@@ -2121,7 +2171,7 @@ export class AmtronApp {
       // The reads that follow publish the limit (with the identity read again).
       this.followUp();
     }
-    if (back) this.noteValues(back);
+    if (back) this.noteValues(back, target);
     let result;
     if (confirmed) {
       this.logger.info('MENNEKES AMTRON: pause confirmed by the charger');
@@ -2163,14 +2213,13 @@ export class AmtronApp {
    * to a click or a command waiting or running; a click ends it. Right
    * before its write, it gives way again if a click or a command arrived.
    */
-  async runCheck() {
-    const guard = this.stopGuard;
-    if (!guard) return;
+  async runCheck(guard) {
+    if (!this.alive(guard)) return;
     if (this.checkMustYield() || this.checking) {
-      this.armStopCheck(TIMINGS.checkYield);
+      this.armStopCheck(guard, TIMINGS.checkYield);
       return;
     }
-    const outcome = { decision: undefined, back: undefined, written: false };
+    const outcome = { decision: undefined, back: undefined, written: false, yielded: false };
     this.checking = true;
     try {
       await this.useLine(
@@ -2188,7 +2237,7 @@ export class AmtronApp {
             value = undefined;
             if (err.kind !== ERROR_KINDS.REFUSED) throw err;
           }
-          if (this.stopGuard !== guard) return;
+          if (!this.alive(guard)) return;
           outcome.back = value;
           outcome.decision = this.decideStop(guard, value?.hemsLimit, startedAt);
           if (outcome.decision !== 'resend') return;
@@ -2196,7 +2245,7 @@ export class AmtronApp {
           const echo = await session.request(request, {
             timeoutMs: TIMINGS.requestTimeout,
             beforeSend: () => {
-              if (this.checkMustYield() || this.stopGuard !== guard) {
+              if (this.checkMustYield() || !this.alive(guard)) {
                 throw Object.assign(new Error('a newer click or command'), { yielded: true });
               }
               this.logger.warn('MENNEKES AMTRON: still not paused after a pause: written again');
@@ -2223,53 +2272,63 @@ export class AmtronApp {
         { yieldTo: () => this.checkMustYield() },
       );
     } catch (err) {
-      if (!err?.yielded && err?.kind !== ERROR_KINDS.ABORTED) {
+      if (err?.yielded) {
+        // Gave its turn to a click or a command: tried again a second later.
+        outcome.yielded = true;
+      } else if (err?.kind !== ERROR_KINDS.ABORTED) {
         this.logger.warn(`MENNEKES AMTRON: check of the pause failed (${errorReason(err)})`);
       }
     } finally {
       this.checking = false;
     }
-    if (this.stopGuard !== guard) return;
+    if (!this.alive(guard)) return;
     if (outcome.written || outcome.decision === 'done') {
       // The limit shown changed (or will): read again soon, with the identity.
       this.followUp();
     }
-    if (outcome.back) this.noteValues(outcome.back);
+    if (outcome.back) this.noteValues(outcome.back, guard.target);
     const limit = outcome.back?.hemsLimit;
     if (outcome.decision === 'done' || pausing(limit)) {
-      this.dropStopGuard('applied');
+      this.dropStopGuard(guard, 'applied');
     } else if (outcome.decision === 'drop') {
       this.logger.info(
         'MENNEKES AMTRON: another limit set after the pause (not by Gladys): let go',
       );
-      this.dropStopGuard('changed elsewhere');
+      this.dropStopGuard(guard, 'changed elsewhere');
     } else {
-      // Armed first: a stuck /data never holds the next check.
-      this.armStopCheck(outcome.decision === 'confirm' ? TIMINGS.holdConfirm : undefined);
+      // Armed first: a stuck /data never holds the next check (a turn given up: 1 s).
+      this.armStopCheck(
+        guard,
+        outcome.decision === 'confirm'
+          ? TIMINGS.holdConfirm
+          : outcome.yielded
+            ? TIMINGS.checkYield
+            : undefined,
+      );
       this.persistStop().catch(() => {});
     }
   }
 
-  dropStopGuard(reason) {
-    const guard = this.stopGuard;
-    if (!guard) return;
+  dropStopGuard(guard, reason) {
+    if (!this.alive(guard)) return;
     if (guard.timer) this.timers.clearTimeout(guard.timer);
-    this.stopGuard = undefined;
+    this.stopGuards.delete(targetKey(guard.target));
     this.logger.debug(`MENNEKES AMTRON: pause let go (${reason})`);
     this.persistStop().catch(() => {});
     this.lastStatus = undefined;
     this.updateStatus().catch(() => {});
   }
 
-  /** The next check of the pause: every 15 s, whatever the refresh interval and the failures. */
-  armStopCheck(delay = TIMINGS.stopRetry) {
-    const guard = this.stopGuard;
-    if (!guard || this.closed) return;
+  /** The next check of a pause: every 15 s, whatever the refresh interval and the failures. */
+  armStopCheck(guard, delay = TIMINGS.stopRetry) {
+    if (!this.alive(guard) || this.closed) return;
     if (guard.timer) this.timers.clearTimeout(guard.timer);
     guard.timer = this.timers.setTimeout(() => {
       guard.timer = undefined;
-      if (this.stopGuard !== guard) return;
-      this.runCheck().catch((err) => this.logger.warn(`MENNEKES AMTRON: check: ${err.message}`));
+      if (!this.alive(guard)) return;
+      this.runCheck(guard).catch((err) =>
+        this.logger.warn(`MENNEKES AMTRON: check: ${err.message}`),
+      );
     }, delay);
   }
 
@@ -2278,23 +2337,23 @@ export class AmtronApp {
    * next check closer ('confirm'); the writing is the job of the checks.
    */
   observe(values, readStartedAt) {
-    const stop = this.stopGuard;
-    if (!stop || !sameTarget(stop.target, this.target())) {
+    const stop = this.guardOf(this.target());
+    if (!stop) {
       return;
     }
     const decision = this.decideStop(stop, values.hemsLimit, readStartedAt);
     if (decision === 'done') {
-      this.dropStopGuard('applied');
+      this.dropStopGuard(stop, 'applied');
     } else if (decision === 'drop') {
       this.logger.info(
         'MENNEKES AMTRON: another limit set after the pause (not by Gladys): let go',
       );
-      this.dropStopGuard('changed elsewhere');
+      this.dropStopGuard(stop, 'changed elsewhere');
     } else if (decision === 'confirm') {
-      this.armStopCheck(TIMINGS.holdConfirm);
+      this.armStopCheck(stop, TIMINGS.holdConfirm);
     } else if (!stop.written) {
       // The charger answers again and the pause never left: written now, by a check.
-      this.armStopCheck(0);
+      this.armStopCheck(stop, 0);
     } else {
       this.persistStop().catch(() => {});
     }

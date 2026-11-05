@@ -7,7 +7,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ROLE as R } from '../src/constants.js';
@@ -24,12 +24,22 @@ const stop = {
 };
 
 test('a pause: kept when valid, its date never in the future, its limit of before a running one', () => {
-  assert.deepEqual(normalizeMemory({ stop }, NOW).stop, stop);
-  assert.equal(normalizeMemory({ stop: { ...stop, since: NOW + 60_000 } }, NOW).stop.since, NOW);
-  assert.equal(normalizeMemory({ stop: { ...stop, host: 'a\nb' } }, NOW).stop, null);
-  assert.equal(normalizeMemory({ stop: { ...stop, from: 0 } }, NOW).stop.from, null);
-  assert.equal(normalizeMemory({ stop: { ...stop, unitId: 2 } }, NOW).stop, null);
-  assert.equal(normalizeMemory({ stop: { ...stop, written: 'yes' } }, NOW).stop.written, false);
+  assert.deepEqual(normalizeMemory({ stop }, NOW).stops, [stop], 'an older file: its single pause');
+  assert.deepEqual(normalizeMemory({ stops: [stop, stop, { ...stop, host: 'b' }] }, NOW).stops, [
+    stop,
+    { ...stop, host: 'b' },
+  ]);
+  assert.equal(
+    normalizeMemory({ stops: [{ ...stop, since: NOW + 60_000 }] }, NOW).stops[0].since,
+    NOW,
+  );
+  assert.equal(normalizeMemory({ stops: [{ ...stop, host: 'a\nb' }] }, NOW).stops.length, 0);
+  assert.equal(normalizeMemory({ stops: [{ ...stop, from: 0 }] }, NOW).stops[0].from, null);
+  assert.equal(normalizeMemory({ stops: [{ ...stop, unitId: 2 }] }, NOW).stops.length, 0);
+  assert.equal(
+    normalizeMemory({ stops: [{ ...stop, written: 'yes' }] }, NOW).stops[0].written,
+    false,
+  );
 });
 
 test('identity, counters and resume value: valid only', () => {
@@ -63,7 +73,9 @@ test('identity, counters and resume value: valid only', () => {
     null,
   );
   assert.equal(normalizeMemory({ lastAttemptAt: NOW + 5000 }, NOW).lastAttemptAt, NOW);
-  assert.deepEqual(normalizeMemory([], NOW).stop, null);
+  assert.deepEqual(normalizeMemory([], NOW).stops, []);
+  assert.equal(normalizeMemory({ keepAlive: 10_000 }, NOW).keepAlive, 10_000);
+  assert.equal(normalizeMemory({ keepAlive: 1000 }, NOW).keepAlive, null);
 });
 
 test('the file: 0600, a round trip, unreadable is not empty, a FIFO never read nor written', async (t) => {
@@ -83,8 +95,27 @@ test('the file: 0600, a round trip, unreadable is not empty, a FIFO never read n
   execFileSync('mkfifo', [fifo]);
   const special = fileStore(fifo);
   assert.deepEqual(await special.load(), { unreadable: true }, 'a FIFO is never read');
+  const folder = join(dir, 'folder.json');
+  await mkdir(folder);
+  assert.deepEqual(
+    await fileStore(folder).load(),
+    { unreadable: true },
+    'a directory is not a file',
+  );
   // The temporary file of a save that is a FIFO is removed, never written into.
   execFileSync('mkfifo', [`${path}.tmp`]);
   await store.save({ stop });
   assert.deepEqual((await store.load()).data, { stop });
+});
+
+test('a stuck disk never piles writes up: one running, the last one waiting', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'amtron-store-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, 'state.json');
+  const store = fileStore(path);
+  const saves = [];
+  for (let i = 0; i < 50; i += 1) saves.push(store.save({ n: i }));
+  await Promise.all(saves);
+  assert.deepEqual((await store.load()).data, { n: 49 }, 'the last one wins');
+  assert.ok(new Set(saves).size <= 3, `${new Set(saves).size} writes for 50 saves`);
 });

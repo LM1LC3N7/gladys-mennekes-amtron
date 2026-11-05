@@ -1,12 +1,12 @@
 // -----------------------------------------------------------------------------
 // What a read means (pure): units, plausibility, 0 never a measure where it
-// means "not available", the maximum of the model.
+// means "not available".
 // -----------------------------------------------------------------------------
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ROLE as R } from '../src/constants.js';
-import { interpret, modelMax, modelOf, protocolOf, serialOf } from '../src/model.js';
+import { interpret, modelOf, protocolOf, serialOf } from '../src/model.js';
 
 test('the meter: W, mA -> A, V; 0 V and a total at 0 are not measures', () => {
   const v = interpret({
@@ -46,14 +46,6 @@ test('states: OCPP status, vehicle, errors, the limit and the pause', () => {
   assert.equal(interpret({ deviceId: 'AM' }).isAmtron, true);
   assert.equal(interpret({ deviceId: 'XX' }).isAmtron, false);
   assert.equal(interpret({}).isAmtron, undefined, 'unread is not "another device"');
-});
-
-test('the maximum of the model: 32 A only when its name says 22 kW', () => {
-  assert.equal(modelMax('AMTRON 4You 560 22 C2'), 32);
-  assert.equal(modelMax('AMTRON 4You 560 22'), 32);
-  assert.equal(modelMax('AMTRON 4Business 730 11 C2'), 16);
-  assert.equal(modelMax('AMTRON 4You 522'), 16);
-  assert.equal(modelMax(undefined), 16);
 });
 
 test('identity texts: strict', () => {

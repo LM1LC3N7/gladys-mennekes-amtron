@@ -29,7 +29,7 @@ test('the configuration: strict numbers, bounded, the commands off unless true',
   assert.equal(c.pollInterval, 30);
   assert.equal(normalizeConfig({ allow_commands: 'yes' }).allowCommands, false);
   assert.equal(normalizeConfig({ allow_commands: 'true' }).allowCommands, true);
-  assert.equal(normalizeConfig({ max_current: 40 }).maxCurrent, 32);
+  assert.equal(normalizeConfig({ max_current: 40 }).maxCurrent, 16);
   assert.equal(normalizeConfig({ max_current: 2 }).maxCurrent, 6);
   assert.equal(normalizeConfig({ max_current: '' }).maxCurrent, 16, "'' is not 0");
   assert.equal(normalizeConfig({ max_current: 10.5 }).maxCurrent, 16);

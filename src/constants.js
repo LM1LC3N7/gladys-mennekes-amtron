@@ -179,17 +179,16 @@ export const HEMS_MODES = { OFF: 0, READ_ONLY: 1, READ_WRITE: 2 };
 export const DEVICE_ID = 'AM';
 
 /**
- * The charging current, in whole amperes. The manufacturer's document allows
- * 0 (pause) and 6 A up to the maximum of the charger: 16 A for an 11 kW model,
- * 32 A for a 22 kW one (the model name, register 142, says which: "... 22 C2").
- * The configured ceiling (16 A by default) caps it further; the minimum
- * current read on the charger (712) raises the floor.
+ * The charging current, in whole amperes. The manufacturer's document says for
+ * register 2000: "Allowed values are therefore 0A and 6A to 16A", for every
+ * model of the family: Gladys writes nothing above 16 A, a 22 kW model
+ * included (mennekes-amtron-ha 2.3.2 allows 32 A there, untested above 16 A
+ * by its author; TODO.md). The configured ceiling (16 A by default) caps it
+ * further; the minimum current read on the charger (712) raises the floor.
  */
 export const CURRENT = {
   min: 6,
-  max: 32,
-  /** The maximum when the model name does not say 22 kW (the document says 6 A to 16 A). */
-  defaultModelMax: 16,
+  max: 16,
   defaultCeiling: 16,
 };
 
@@ -320,10 +319,7 @@ export const TIMINGS = {
   /** "Accept the held index": the second click 3 s to 5 min after the first. */
   acceptAfter: 3 * SECOND,
   acceptWithin: 5 * MINUTE,
-  /** The serial number (HTTP) is read again this often, and at most this often after a failure. */
-  identityEvery: HOUR,
-  identityRetry: MINUTE,
-  /** One read of PublicInfo. */
+  /** One read of PublicInfo (HTTP), with every read and before every command. */
   identityTimeout: 3 * SECOND,
   /** While a limit below the Safe Current is set, a read at least this often (half the timeout), never more often than every 5 s. */
   keepAliveMin: 5 * SECOND,

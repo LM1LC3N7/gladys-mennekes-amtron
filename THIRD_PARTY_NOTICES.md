@@ -31,7 +31,7 @@ register set (`const.py`).
 
 Changed: register 122 is read alone (the reference reads 122 to 124, and 123
 is not in the document); the HEMS limit written is checked at the protocol
-layer (0, or 6 A to 32 A, register 2000 only) and capped by the model, the
+layer (0, or 6 A to 16 A as the document says, register 2000 only; the reference allows 32 A on 22 kW models) and capped by the
 configuration and the minimum read; "resume" sets the current read before
 the pause, never a fixed 16 A; every command is decided on a fresh read and
 confirmed by a read back; the pause is never held back and is written again

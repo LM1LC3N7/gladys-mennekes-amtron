@@ -27,26 +27,28 @@ seulement si vous l’autorisez, la reprendre et régler le courant de charge.
 
 ## Configuration
 
-| Champ                          | Sens                                                                                                 |
-| ------------------------------ | ---------------------------------------------------------------------------------------------------- |
-| Adresse IP de la borne         | Port Modbus 502 sauf si vous en ajoutez un (`192.168.1.80:502`).                                     |
-| Port de l’interface web        | 80 sauf changement : Gladys y lit le numéro de série (`/api/v1/PublicInfo`, sans identifiant).       |
-| Autoriser la reprise…          | Désactivé par défaut : voir « Reprise et courant » plus bas.                                         |
-| Courant de charge maximal (A)  | De 6 à 32 A (16 par défaut) : le plus que Gladys peut régler, plafonné aussi par le modèle de borne. |
-| Intervalle de rafraîchissement | Secondes entre deux lectures (30 par défaut, 10 au moins) ; voir « Safe Current » plus bas.          |
-| Langue                         | Noms de l’appareil et des fonctionnalités ajoutés désormais, statut et erreurs.                      |
+| Champ                          | Sens                                                                                               |
+| ------------------------------ | -------------------------------------------------------------------------------------------------- |
+| Adresse IP de la borne         | Port Modbus 502 sauf si vous en ajoutez un (`192.168.1.80:502`).                                   |
+| Port de l’interface web        | 80 sauf changement : Gladys y lit le numéro de série (`/api/v1/PublicInfo`, sans identifiant).     |
+| Autoriser la reprise…          | Désactivé par défaut : voir « Reprise et courant » plus bas.                                       |
+| Courant de charge maximal (A)  | De 6 à 16 A (16 par défaut) : le plus que Gladys peut régler (la plage du document, tous modèles). |
+| Intervalle de rafraîchissement | Secondes entre deux lectures (30 par défaut, 10 au moins) ; voir « Safe Current » plus bas.        |
+| Langue                         | Noms de l’appareil et des fonctionnalités ajoutés désormais, statut et erreurs.                    |
 
 Enregistrez, puis ajoutez la borne depuis l’onglet **Découverte**.
 
-La carte Modbus n’a pas de numéro de série : Gladys le lit une fois sur
-l’interface web de la borne (sans identifiant), puis toutes les heures et
-après chaque coupure, et le garde avec le nom de modèle que la borne donne en
-Modbus. L’appareil est identifié par ce **numéro de série**. Chaque lecture
-vérifie en Modbus que l’appareil se dit AMTRON (registre 141 = « AM ») et
-donne le même modèle : sinon rien n’est publié tant que le numéro de série
-n’a pas été relu. Un autre numéro de série à l’adresse est un autre appareil
-(l’ancien apparaît injoignable). Tant que le numéro de série n’a jamais été
-lu, rien n’est publié (le statut dit pourquoi).
+La carte Modbus n’a pas de numéro de série : Gladys le lit sur l’interface
+web de la borne (sans identifiant) à **chaque lecture** et avant chaque
+commande, à l’adresse même que la connexion Modbus a jointe, et le garde avec
+le nom de modèle que la borne donne en Modbus. L’appareil est identifié par
+ce **numéro de série** : un autre numéro de série à l’adresse est un autre
+appareil (l’ancien apparaît injoignable), et ses valeurs ne vont jamais sur
+le premier. Quand la page web est illisible, ce n’est pas une autre borne :
+la lecture est publiée si l’appareil se dit AMTRON en Modbus (registre 141 =
+« AM ») avec le même modèle, sinon rien n’est publié tant que le numéro de
+série n’a pas été relu. Tant que le numéro de série n’a jamais été lu, rien
+n’est publié (le statut dit pourquoi).
 
 Le bouton **Tester la connexion** lit la borne une fois, jamais avant
 l’intervalle de rafraîchissement après la dernière lecture (il montre alors
@@ -110,16 +112,25 @@ La pause ne répond une erreur que dans ces cas :
 - elle est partie mais la relecture ne la montre pas encore : « envoyée,
   sans confirmation ».
 
-Une pause pas encore vue appliquée est **gardée** dans `/data` (aussi après
-un redémarrage : elle est réécrite au démarrage, avant tout le reste) et
-vérifiée toutes les 15 s : réécrite tant que la borne montre la limite
-qu’elle remplace, une limite inconnue ou rien. Elle n’est abandonnée que
-quand la borne montre la pause, quand une autre limite réglée ailleurs est
-lue deux fois de suite après l’écriture de la pause (un choix plus récent est
-respecté ; une pause pas encore écrite n’est jamais abandonnée ainsi), ou
-quand un courant plus récent demandé dans Gladys est parti. Elle n’est jamais
-abandonnée avec le temps, ni parce qu’elle n’a pas pu partir (borne coupée,
-`/data` bloqué).
+Une pause pas encore vue appliquée est **gardée** dans `/data`, une par borne
+(aussi après un redémarrage : elle est réécrite au démarrage, avant tout le
+reste, même quand `/data` est lent à lire) et vérifiée toutes les 15 s :
+réécrite tant que la borne montre la limite qu’elle remplace, une limite
+inconnue ou rien. Elle n’est abandonnée que dans ces trois cas :
+
+- la borne à laquelle elle a été envoyée montre la pause (une limite sous
+  6 A) ;
+- une autre limite réglée ailleurs est lue deux fois de suite sur cette borne
+  après l’écriture de la pause (un choix plus récent est respecté ; une pause
+  pas encore écrite n’est jamais abandonnée ainsi) ;
+- un courant ou une reprise plus récents demandés dans Gladys sont partis
+  vers cette même borne.
+
+Elle n’est jamais abandonnée avec le temps, ni parce qu’elle n’a pas pu
+partir (borne coupée, `/data` bloqué), ni par une pause ou une commande
+envoyée à une autre adresse. Tant qu’une pause est gardée, « Courant de
+charge » et « Reprendre » écrivent toujours (jamais « déjà fait »), et cette
+écriture abandonne la pause.
 
 ### Safe Current
 
@@ -128,7 +139,10 @@ après son **délai de communication** (registre 132) sans lecture ni
 écriture, elle applique son **Safe Current** (registre 131). Si le Safe
 Current est au-dessus de la limite réglée (une pause comprise), la charge
 reprendrait. Tant que c’est le cas, Gladys lit donc la borne au moins toutes
-les demi-durées de ce délai (5 s au moins), et le
+les demi-durées de ce délai (5 s au moins ; un délai sous 10 s ne peut donc
+pas être tenu), une lecture en échec réessayée dans les 5 s, et tout de suite
+après un redémarrage (le rythme est gardé dans `/data`), et aussi
+pendant une pause quand 131 et 132 ne peuvent pas être lus ; et le
 statut prévient que la pause ne tient que tant que Gladys lit la borne. Pour
 garder une pause même Gladys arrêté, réglez le Safe Current à 0 A dans le
 menu installateur. Gladys n’écrit jamais ces deux registres.
@@ -140,10 +154,11 @@ peut :
 
 - **Reprendre la charge** : réécrit le courant de charge lu avant la pause
   (refusé si aucun n’a été lu ; choisissez-en un dans la liste) ;
-- régler le **courant de charge** : de 6 A jusqu’au plus bas du plafond
-  configuré et du maximum du modèle (16 A pour un modèle 11 kW, 32 A quand
-  son nom indique 22 kW), jamais sous le courant minimum donné par la borne
-  (registre 712).
+- régler le **courant de charge** : de 6 A jusqu’au plafond configuré, 16 A
+  au plus pour tous les modèles, jamais sous le courant minimum donné par la
+  borne (registre 712). Le document MENNEKES donne 6 A à 16 A pour le
+  registre 2000 ; au-delà de 16 A sur un modèle 22 kW n’y figure pas, Gladys
+  ne l’écrit donc jamais.
 
 Avant chaque commande, Gladys lit le numéro de série sur l’interface web
 (une autre borne, ou un numéro illisible, refuse la commande), puis, dans la
@@ -159,6 +174,7 @@ attend son tour part dans les 15 s ou pas du tout.
 
 `/data/mennekes-amtron-state.json` (lisible par l’intégration seule) :
 l’heure de la dernière lecture, la borne de la dernière lecture, son numéro
-de série et son modèle, une pause pas encore vue appliquée, la garde du
+de série et son modèle, les pauses pas encore vues appliquées, le rythme de
+lecture tant qu’une limite sous le Safe Current est réglée, la garde du
 compteur d’énergie et le courant que « Reprendre » réécrit. Aucun mot de
 passe, aucune donnée personnelle.
