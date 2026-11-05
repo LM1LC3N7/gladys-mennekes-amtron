@@ -1,177 +1,181 @@
 {
   "manifest_version": 1,
   "type": "device",
-  "name": "Demo Devices Template",
+  "name": "MENNEKES AMTRON",
   "description": {
-    "en": "Starter template showing sensors, a switch, a dimmable light and a smart plug.",
-    "fr": "Template de démarrage : capteurs, interrupteur, lampe variable et prise connectée."
+    "en": "MENNEKES AMTRON charger over Modbus TCP: state, power, energy, pause; optional commands.",
+    "fr": "Borne MENNEKES AMTRON en Modbus TCP : état, puissance, énergie, pause ; commandes en option."
   },
-  "version": "1.0.0",
-  "docker_image": "ghcr.io/gladysassistant/integration-template-js:1.0.0",
+  "version": "0.1.0",
+  "docker_image": "ghcr.io/lm1lc3n7/gladys-mennekes-amtron:0.1.0",
   "gladys_version": ">=5.1.0",
-  "cover_image": "https://raw.githubusercontent.com/GladysAssistant/integration-template-js/master/cover.png",
-  "categories": ["lighting", "security", "environment"],
-  "transports": ["local", "cloud"],
+  "cover_image": "https://raw.githubusercontent.com/LM1LC3N7/gladys-mennekes-amtron/main/cover.png",
+  "categories": ["vehicles", "energy"],
+  "transports": ["local"],
   "config_schema": [
     {
       "key": "intro",
       "type": "section",
-      "label": { "en": "Getting started", "fr": "Pour commencer" },
+      "label": {
+        "en": "Your MENNEKES AMTRON charger",
+        "fr": "Votre borne MENNEKES AMTRON"
+      },
       "description": {
-        "en": "The demo weather station reads real data from the free Open-Meteo API: pick the coordinates to observe. No account, no API key.",
-        "fr": "La station météo de démonstration lit de vraies données via l'API gratuite Open-Meteo : choisissez les coordonnées à observer. Pas de compte, pas de clé d'API."
+        "en": "Shows your AMTRON 4You 400/500 or 4Business 600/700 charger in Gladys over Modbus TCP on your local network, without any cloud: state, vehicle plugged in, power, current and voltage per phase, energy meter, energy and duration of the session. In the installer menu of the charger, set the Modbus TCP server to \"HEMS read and write\"; give the charger a fixed address, enter it below, save, then add it from the Discovery tab. Pausing the charge is always possible; resuming it and the charging current only if you allow them below. The charger serves one Modbus client at a time and Modbus TCP has no password: keep it on a trusted network. Never tested with a real device. Not affiliated with MENNEKES.",
+        "fr": "Affiche votre borne AMTRON 4You 400/500 ou 4Business 600/700 dans Gladys en Modbus TCP sur votre réseau local, sans cloud : état, véhicule branché, puissance, courant et tension par phase, compteur d’énergie, énergie et durée de la session. Dans le menu installateur de la borne, réglez le serveur Modbus TCP sur « HEMS lecture et écriture » ; donnez à la borne une adresse fixe, saisissez-la ci-dessous, enregistrez, puis ajoutez-la depuis l’onglet Découverte. Mettre la charge en pause est toujours possible ; la reprendre et régler le courant seulement si vous les autorisez ci-dessous. La borne ne sert qu’un client Modbus à la fois et Modbus TCP n’a pas de mot de passe : gardez-la sur un réseau de confiance. Jamais testé avec un vrai appareil. Sans lien avec MENNEKES."
       },
       "links": [
         {
-          "url": "https://open-meteo.com/en/docs",
-          "label": { "en": "Open-Meteo documentation", "fr": "Documentation Open-Meteo" }
+          "url": "https://github.com/LM1LC3N7/gladys-mennekes-amtron/blob/main/docs/fr.md",
+          "label": {
+            "en": "Guide (French)",
+            "fr": "Guide (français)"
+          }
+        },
+        {
+          "url": "https://github.com/LM1LC3N7/gladys-mennekes-amtron/blob/main/docs/en.md",
+          "label": {
+            "en": "Guide (English)",
+            "fr": "Guide (anglais)"
+          }
         }
       ]
     },
     {
-      "key": "latitude",
-      "type": "number",
-      "label": { "en": "Latitude", "fr": "Latitude" },
-      "description": {
-        "en": "Latitude used for the demo weather sensor.",
-        "fr": "Latitude utilisée par le capteur météo de démonstration."
+      "key": "host",
+      "type": "string",
+      "label": {
+        "en": "IP address of the charger",
+        "fr": "Adresse IP de la borne"
       },
-      "placeholder": { "en": "e.g. 48.8566", "fr": "ex. 48.8566" },
-      "required": true,
-      "default": 48.8566,
-      "min": -90,
-      "max": 90
-    },
-    {
-      "key": "longitude",
-      "type": "number",
-      "label": { "en": "Longitude", "fr": "Longitude" },
       "description": {
-        "en": "Longitude used for the demo weather sensor.",
-        "fr": "Longitude utilisée par le capteur météo de démonstration."
+        "en": "An IPv4 address or a host name (Modbus port 502 unless you add one, for example 192.168.1.80:502).",
+        "fr": "Une adresse IPv4 ou un nom d’hôte (port Modbus 502 sauf si vous en ajoutez un, par exemple 192.168.1.80:502)."
       },
-      "placeholder": { "en": "e.g. 2.3522", "fr": "ex. 2.3522" },
+      "placeholder": {
+        "en": "192.168.1.80",
+        "fr": "192.168.1.80"
+      },
       "required": true,
-      "default": 2.3522,
-      "min": -180,
-      "max": 180
+      "default": ""
     },
     {
-      "key": "unit",
-      "type": "select",
-      "label": { "en": "Temperature unit", "fr": "Unité de température" },
-      "required": false,
-      "default": "celsius",
-      "options": [
-        { "value": "celsius", "label": { "en": "Celsius", "fr": "Celsius" } },
-        { "value": "fahrenheit", "label": { "en": "Fahrenheit", "fr": "Fahrenheit" } }
-      ]
-    },
-    {
-      "key": "poll_frequency",
+      "key": "api_port",
       "type": "number",
-      "label": { "en": "Refresh interval (s)", "fr": "Intervalle de rafraîchissement (s)" },
+      "label": {
+        "en": "Port of the web interface",
+        "fr": "Port de l’interface web"
+      },
       "description": {
-        "en": "How often sensors are polled, in seconds (one minute minimum).",
-        "fr": "Fréquence d'interrogation des capteurs, en secondes (une minute minimum)."
+        "en": "The HTTP port of the charger's web interface, where Gladys reads its serial number (no login): 80 unless changed.",
+        "fr": "Le port HTTP de l’interface web de la borne, où Gladys lit son numéro de série (sans identifiant) : 80 sauf changement."
       },
       "required": false,
-      "default": 300,
-      "min": 60,
+      "default": 80,
+      "min": 1,
+      "max": 65535
+    },
+    {
+      "key": "allow_commands",
+      "type": "boolean",
+      "label": {
+        "en": "Allow resume and current",
+        "fr": "Autoriser la reprise et le courant"
+      },
+      "description": {
+        "en": "Off by default. On: Gladys may resume the charge and set the charging current (6 A up to the ceiling below and the maximum of the charger). Off: these commands are refused. Pausing the charge never depends on this option.",
+        "fr": "Désactivé par défaut. Activé : Gladys peut reprendre la charge et régler le courant de charge (de 6 A jusqu’au plafond ci-dessous et au maximum de la borne). Désactivé : ces commandes sont refusées. Mettre la charge en pause ne dépend jamais de cette option."
+      },
+      "required": false,
+      "default": false
+    },
+    {
+      "key": "max_current",
+      "type": "number",
+      "label": {
+        "en": "Highest charging current (A)",
+        "fr": "Courant de charge maximal (A)"
+      },
+      "description": {
+        "en": "The highest current Gladys may set, 6 to 32 A (16 by default); never above what the model allows (16 A for an 11 kW model, 32 A for a 22 kW one); the charger also applies the limit of its installation.",
+        "fr": "Le courant le plus élevé que Gladys peut régler, de 6 à 32 A (16 par défaut) ; jamais au-dessus de ce que le modèle permet (16 A pour un modèle 11 kW, 32 A pour un 22 kW) ; la borne applique aussi la limite de son installation."
+      },
+      "required": false,
+      "default": 16,
+      "min": 6,
+      "max": 32
+    },
+    {
+      "key": "poll_interval",
+      "type": "number",
+      "label": {
+        "en": "Refresh interval (s)",
+        "fr": "Intervalle de rafraîchissement (s)"
+      },
+      "description": {
+        "en": "How often the charger is read, in seconds. While a limit below the Safe Current is set, Gladys reads it at least every half communication timeout of the charger.",
+        "fr": "Fréquence de lecture de la borne, en secondes. Tant qu’une limite sous le Safe Current est réglée, Gladys la lit au moins toutes les demi-durées du délai de communication de la borne."
+      },
+      "required": false,
+      "default": 30,
+      "min": 10,
       "max": 3600
+    },
+    {
+      "key": "language",
+      "type": "select",
+      "label": {
+        "en": "Language of the feature names",
+        "fr": "Langue des noms des fonctionnalités"
+      },
+      "description": {
+        "en": "Used for the names of the device and features added from now on, the status and the command errors.",
+        "fr": "Sert aux noms de l’appareil et des fonctionnalités ajoutés désormais, au statut et aux erreurs des commandes."
+      },
+      "required": false,
+      "default": "fr",
+      "options": [
+        {
+          "value": "fr",
+          "label": {
+            "en": "French",
+            "fr": "Français"
+          }
+        },
+        {
+          "value": "en",
+          "label": {
+            "en": "English",
+            "fr": "Anglais"
+          }
+        }
+      ]
     }
   ],
   "actions": [
     {
-      "key": "test_weather",
-      "label": { "en": "Test the weather provider", "fr": "Tester le fournisseur météo" },
-      "timeout_seconds": 30
+      "key": "test_connection",
+      "label": {
+        "en": "Test the connection",
+        "fr": "Tester la connexion"
+      },
+      "description": {
+        "en": "Reads the charger once (never sooner than the refresh interval) and shows its state.",
+        "fr": "Lit la borne une fois (jamais avant l’intervalle de rafraîchissement) et affiche son état."
+      },
+      "timeout_seconds": 60
     },
     {
-      "key": "identify",
-      "label": { "en": "Identify a device", "fr": "Identifier un appareil" },
-      "fields": [
-        {
-          "key": "device",
-          "type": "select",
-          "source": "devices",
-          "label": { "en": "Device", "fr": "Appareil" },
-          "required": true
-        }
-      ]
-    }
-  ],
-  "scene_triggers": [
-    {
-      "key": "motion_detected",
-      "label": { "en": "Motion detected", "fr": "Mouvement détecté" },
-      "description": {
-        "en": "A demo motion sensor saw a person or an animal move.",
-        "fr": "Un détecteur de démonstration a vu bouger une personne ou un animal."
+      "key": "accept_held_index",
+      "label": {
+        "en": "Accept the held index",
+        "fr": "Accepter l’index retenu"
       },
-      "fields": [
-        {
-          "key": "device",
-          "type": "select",
-          "source": "devices",
-          "label": { "en": "Sensor", "fr": "Détecteur" }
-        },
-        {
-          "key": "target",
-          "type": "multi_select",
-          "label": { "en": "What moved", "fr": "Ce qui a bougé" },
-          "options": [
-            { "value": "person", "label": { "en": "Person", "fr": "Personne" } },
-            { "value": "animal", "label": { "en": "Animal", "fr": "Animal" } }
-          ]
-        }
-      ],
-      "variables": [
-        {
-          "key": "target",
-          "type": "string",
-          "label": { "en": "What moved", "fr": "Ce qui a bougé" }
-        }
-      ]
-    }
-  ],
-  "scene_actions": [
-    {
-      "key": "identify_device",
-      "label": { "en": "Identify a device", "fr": "Identifier un appareil" },
       "description": {
-        "en": "Make a device signal itself (the demo light blinks).",
-        "fr": "Fait se signaler un appareil (la lampe de démonstration clignote)."
+        "en": "An energy meter that dropped or jumped (reset, replacement) is held back. The first press shows it; a second press, 3 s to 5 minutes later, accepts exactly that value.",
+        "fr": "Un compteur d’énergie qui a baissé ou sauté (remise à zéro, remplacement) est retenu. Un premier appui l’affiche ; un second, de 3 s à 5 minutes après, accepte exactement cette valeur."
       },
-      "timeout_seconds": 15,
-      "fields": [
-        {
-          "key": "device",
-          "type": "select",
-          "source": "devices",
-          "label": { "en": "Device", "fr": "Appareil" },
-          "required": true
-        }
-      ],
-      "outputs": [
-        {
-          "key": "signalled",
-          "type": "boolean",
-          "label": { "en": "Device signalled", "fr": "Appareil signalé" }
-        }
-      ]
-    }
-  ],
-  "widgets": [
-    {
-      "key": "demo_status",
-      "label": { "en": "Demo status", "fr": "État de la démo" },
-      "description": {
-        "en": "Live temperature and plug power, plug connection and observed location.",
-        "fr": "Température et puissance en direct, connexion de la prise, position observée."
-      },
-      "icon": "activity",
-      "action_timeout_seconds": 15
+      "timeout_seconds": 30
     }
   ]
 }
