@@ -10,6 +10,8 @@ the notes of the version's GitHub Release.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-05
+
 ### Added
 
 - MENNEKES AMTRON 4You 400/500 and 4Business 600/700 chargers over local Modbus TCP (registers
@@ -21,3 +23,6 @@ the notes of the version's GitHub Release.
 - "Pause charging" (HEMS limit 0 A), never held back, kept and checked until the charger shows it.
 - "Resume charging" and the charging current, off by default, 6 A to 16 A (the range of the
   manufacturer's document), bounded by the configuration and the minimum current of the charger.
+
+[Unreleased]: https://github.com/LM1LC3N7/gladys-mennekes-amtron/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/LM1LC3N7/gladys-mennekes-amtron/releases/tag/v0.1.1

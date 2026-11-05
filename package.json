@@ -1,6 +1,6 @@
 {
   "name": "gladys-mennekes-amtron",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Gladys Assistant external integration for MENNEKES AMTRON 4You and 4Business EV chargers over Modbus TCP (state, power, current and voltage per phase, guarded energy index, session; pause, and optional resume and charging current). Unofficial, not affiliated with MENNEKES.",
   "type": "module",
